@@ -1,164 +1,57 @@
 # Mesh Smoothing Lecture Lab
 
+**A visual deep dive into mesh smoothing.**
+
 ## Project Purpose
 
-Mesh Smoothing Lecture Lab is an interactive visual lecture companion for a
-computer graphics mesh modeling lecture. It focuses on neighbor-based mesh
-smoothing and shrinkage.
+Mesh Smoothing Lecture Lab is an interactive learning tool built around a single
+topic: **mesh smoothing**. It lets students understand smoothing visually,
+mathematically, and experimentally. Instead of covering many shallow topics, it
+goes deep on one: what smoothing does, why it shrinks meshes, how different
+smoothing methods compare, and how connectivity and boundaries affect the
+result.
 
-The app maps short explanations to live visual controls. Students can change a
-mesh, apply smoothing, and immediately compare the original shape with the
-current smoothed result.
+The app maps short explanations to live visual controls. Students can add noise
+to a mesh, apply several smoothing methods, compare them on identical input,
+inspect the per-vertex computation, and read metrics that quantify roughness and
+shrinkage.
 
-## Course/Lecture Connection
+## Course / Lecture Connection
 
-The lab supports the mesh modeling lecture topic of neighbor-based smoothing.
-It shows how polygonal meshes store vertices, edges, and faces, how mesh
-connectivity provides neighboring vertices, and how repeated averaging changes
-surface shape.
+The lab supports the computer graphics mesh modeling lecture, focusing on the
+smoothing portion: polygonal mesh topology, connectivity, normals,
+neighbor-average (Laplacian) smoothing, shrinkage, boundary preservation,
+soft-selection smoothing, and two more advanced methods (Taubin and
+cotangent-weighted Laplacian). It also adds a roughness energy metric so the
+"smoothness" of a mesh becomes a measurable number.
 
-## Guided Lecture Walkthrough
+## What Problem the Lab Solves
 
-The app includes a step-based walkthrough:
+Smoothing is easy to state ("move each vertex toward the average of its
+neighbors") but its consequences are subtle:
 
-1. Polygonal Mesh: connect solid, wireframe, and points modes to faces, edges,
-   and vertices.
-2. Mesh Connectivity: inspect statistics and wireframe structure to see why
-   neighbor queries matter.
-3. Normals: compare face normals and vertex normals as surface orientation
-   cues.
-4. Neighbor-Average Smoothing: apply one smoothing step and observe sharp
-   regions relax.
-5. Repeated Smoothing and Shrinkage: apply many iterations and watch size
-   metrics decrease.
-6. Boundary Preservation: compare the plane/grid with boundary preservation on
-   and off.
+- It reduces roughness but can shrink the whole mesh.
+- Different methods trade roughness reduction against shape preservation.
+- Connectivity and triangle shape change the result.
+- Open boundaries need special handling.
 
-Each step has a short explanation, a student action, and what to observe.
+The lab makes each of these observable with controlled experiments and metrics.
 
-## Smoothing Observation Metrics
+## Implemented Smoothing Concepts
 
-The metrics panel compares the original mesh with the current working mesh:
-
-- Vertex count.
-- Face count.
-- Unique edge count.
-- Smoothing iterations applied.
-- Average vertex displacement from the original.
-- Max vertex displacement from the original.
-- Bounding box diagonal for original and current mesh, plus percent change.
-- Surface area for original and current mesh, plus percent change.
-- Volume for original and current mesh, plus percent change when available.
-
-Displacement is shown as N/A if the original and current meshes do not have the
-same vertex count. Volume is shown as N/A for open or non-watertight meshes.
-
-## Before / After Comparison
-
-The comparison view shows the unchanged original mesh and the current working
-mesh after smoothing. This gives students a direct visual way to inspect
-shrinkage and boundary behavior.
-
-The app supports:
-
-- Side-by-side comparison with original mesh on the left and current mesh on
-  the right.
-- Overlay comparison with the original mesh as wireframe and the current mesh
-  as shaded geometry.
-- Original-only and current-only views for focused inspection.
-
-The original mesh is replaced only when the user switches source or uploads a
-new valid OBJ. Smoothing changes only the current working mesh.
-
-## Local / Soft Smoothing
-
-Local / soft smoothing connects the smoothing experiment to the lecture idea of
-soft selection. Instead of smoothing every movable vertex equally, the app lets
-students choose a center vertex and apply smoothing with a graph-distance
-falloff around that center.
-
-The center vertex receives the strongest smoothing weight. Vertices farther
-away through mesh connectivity receive smaller weights, and vertices outside
-the radius are unchanged. Boundary preservation still keeps boundary vertices
-fixed when enabled.
-
-To try it:
-
-1. Choose a mesh.
-2. Set Smoothing mode to Local / soft smoothing.
-3. Choose a center vertex index.
-4. Set the soft selection radius in graph steps.
-5. Choose linear or smoothstep falloff.
-6. Apply one or more iterations.
-7. Compare before/after views, metrics, and smoothing history.
-
-## Lecture Notes Companion
-
-The Lecture Notes Companion maps lecture concepts to interactive visual
-experiments in the app. Each entry includes:
-
-- Lecture idea.
-- Where to try it in the app.
-- What students should observe.
-
-The mapping covers polygonal meshes, mesh data and connectivity, face normals,
-vertex normals, neighbor-average smoothing, repeated smoothing and shrinkage,
-local/soft smoothing, and boundary preservation.
-
-The app also includes a lightweight Scribe Notes Placeholder. A future version
-can add notes transcribed from the lecture recording and link each paragraph to
-the matching visual experiment.
-
-## What Shrinkage Metrics Mean
-
-Neighbor-average smoothing repeatedly moves each vertex toward its connected
-neighbors. This relaxes sharp details, but it can also pull the mesh inward.
-
-The bounding box diagonal shows whether the overall extent is changing. Surface
-area shows whether the visible surface is shrinking. Volume, when available,
-shows whether a closed mesh encloses less space after smoothing.
-
-Topology counts should usually stay the same because smoothing changes vertex
-positions without changing faces or edges.
-
-## What Students Can Explore
-
-- Vertices, edges, and faces in triangle, quad, and mixed polygon meshes.
-- Solid, wireframe, points, and wireframe plus shaded views.
-- Face normals and vertex normals.
-- Average and area-weighted vertex normal visualization.
-- Neighbor-average smoothing with adjustable iteration count.
-- Smoothing strength, also called lambda in the lecture formula.
-- Local / soft smoothing with graph-distance falloff from a chosen center
-  vertex.
-- Shape shrinkage after repeated smoothing.
-- Boundary preservation on open meshes such as the plane/grid.
-- Before/after visual comparison between original and current mesh.
-- Lecture concept mappings tied to app actions and observations.
-- Smoothing history over repeated actions.
-- Reset behavior for returning to the original mesh.
-
-## Implemented Features
-
-- Streamlit app with a PyVista-based 3D viewer.
-- Built-in sample meshes: cube, plane/grid, low-poly sphere, and cylinder.
-- OBJ upload with safe fallback for missing, invalid, empty, or unsupported
-  files.
-- Mesh statistics for vertices, faces, unique edges, and mesh type.
-- Display modes for shaded mesh, wireframe, points, and shaded wireframe.
-- Face normal and vertex normal overlays.
-- Normal length control.
-- Vertex normal weighting control.
-- Neighbor-average smoothing.
-- Local / soft smoothing connected to soft selection.
-- Boundary vertex preservation.
-- Guided lecture walkthrough.
-- Before/after comparison with side-by-side and overlay modes.
-- Lecture Notes Companion with concept-to-control mappings.
-- Scribe Notes Placeholder for future lecture transcript integration.
-- Original/current smoothing observation metrics.
-- Smoothing history table and change chart.
-- Reset to the original loaded or generated mesh.
+- Polygonal mesh topology (vertices, edges, faces; triangle/quad/mixed).
+- Mesh connectivity and one-ring neighbor queries.
+- Face normals and vertex normals (average and area-weighted).
+- Uniform Laplacian (neighbor-average) smoothing.
+- Shrinkage from repeated averaging.
+- Boundary preservation on open meshes.
+- Local / soft-selection smoothing with graph-distance falloff.
+- **Taubin smoothing** (lambda/mu) to reduce shrinkage.
+- **Cotangent-weighted Laplacian smoothing** (geometry-aware, triangle meshes).
+- **Roughness (smoothness) energy** metric.
+- **Method comparison** on identical input.
+- **Smoothing step inspector** for the per-vertex computation.
+- **Noisy mesh experiment** (clean -> noisy -> smoothed).
 
 ## How to Run
 
@@ -170,7 +63,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-On macOS or Linux, activate the environment with:
+On macOS or Linux, activate with:
 
 ```bash
 source .venv/bin/activate
@@ -182,64 +75,114 @@ Run the app:
 python -m streamlit run app.py
 ```
 
-If the normal Streamlit launcher is blocked on Windows, use the same module
-command above instead of `streamlit run app.py`.
-
-Streamlit opens the app in a browser. If it does not open automatically, use
-the local URL printed in the terminal.
-
-## Suggested Learning Flow
-
-1. Choose a built-in mesh.
-2. Follow the Guided Lecture Walkthrough tabs.
-3. Switch between solid, wireframe, and points to identify vertices, edges, and
-   faces.
-4. Toggle face normals and vertex normals.
-5. Apply one smoothing iteration.
-6. Apply many smoothing iterations.
-7. Try Local / soft smoothing with a center vertex and graph radius.
-8. Use the Before / After Comparison section to inspect visual change.
-9. Read the Lecture Notes Companion entries for the matching lecture idea.
-10. Watch the observation metrics and history table update.
-11. Compare boundary preservation on and off for the plane/grid.
-12. Reset and try another mesh.
+Streamlit opens the app in a browser. If it does not open automatically, use the
+local URL printed in the terminal.
 
 ## Suggested 2-3 Minute Demo Flow
 
-1. Open with the cube or low-poly sphere and point out the mesh statistics:
-   vertices, faces, edges, and mesh type.
-2. Switch display modes between solid, wireframe, points, and shaded wireframe
-   to connect the viewer to polygonal mesh structure.
-3. Toggle face normals and vertex normals briefly to show orientation cues from
-   the lecture.
-4. Apply one global smoothing iteration with moderate strength and explain that
-   each vertex moves toward the average of its neighbors.
-5. Apply several more iterations and use the metrics plus history chart to show
-   average displacement, bounding-box shrinkage, and surface-area change.
-6. Open Before / After Comparison, then switch between side-by-side and overlay
-   to show that the original mesh is preserved while the current mesh changes.
-7. Switch to the plane/grid and compare smoothing with boundary preservation on
-   and off to show why open mesh boundaries need special handling.
-8. Switch to Local / soft smoothing, choose a center vertex and graph radius,
-   and apply smoothing to show a localized effect with distance falloff.
-9. Reset the mesh and state the main takeaway: the lab turns lecture concepts
-   about connectivity, normals, smoothing, shrinkage, boundaries, and soft
-   selection into live experiments.
+1. Load the **Low-poly sphere** and note the mesh statistics and roughness
+   energy.
+2. In the sidebar **Noisy mesh experiment**, add noise along vertex normals
+   (strength ~0.4, seed 42). Watch roughness energy jump.
+3. Apply **Uniform Laplacian** smoothing (10+ iterations) and point out that
+   roughness drops but the bounding box and surface area shrink a lot.
+4. Reset to clean original, re-add the same noise, and apply **Taubin** — note
+   that it reduces roughness with far less shrinkage.
+5. Open **Smoothing Method Comparison** and run it: one table shows uniform vs
+   Taubin vs cotangent on the same input, with ranking notes.
+6. Open the **Smoothing Step Inspector**, pick a vertex, and show the neighbor
+   average and predicted one-step position — the smoothing formula made visible.
 
-## Current Limitations
+See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for a fuller script.
 
-- The lab covers neighbor-average smoothing only.
+## Student Exercises
+
+The app's **Student Exercises** section (and [docs/STUDENT_GUIDE.md](docs/STUDENT_GUIDE.md))
+includes short guided tasks:
+
+1. Topology stays fixed during smoothing.
+2. Shrinkage from repeated uniform smoothing.
+3. Boundary preservation on the plane/grid.
+4. Noise removal and the roughness/shrinkage tradeoff.
+5. Method comparison on a noisy sphere.
+6. Local soft smoothing with different radii.
+7. Step inspector before and after smoothing.
+
+Each exercise lists a goal, steps, the expected observation, and why it matters.
+
+## Explanation of Each Smoothing Method
+
+See [docs/METHODS.md](docs/METHODS.md) for detail. In short:
+
+- **Uniform Laplacian**: each vertex moves toward the plain average of its
+  one-ring neighbors. Simple and connectivity-driven, but shrinks meshes.
+- **Taubin**: alternates a positive smoothing step (lambda) with a negative
+  correction step (mu < 0). Smooths while preserving size much better.
+- **Cotangent-weighted Laplacian**: weights each neighbor using triangle angles
+  (cotangent weights), so it is geometry-aware. Defined for triangle meshes
+  only; the lab clamps negative weights for stability.
+- **Local / soft smoothing**: uniform smoothing scaled by a graph-distance
+  falloff from a chosen center vertex, like a soft brush.
+
+## Explanation of Metrics
+
+- **Topology counts** (vertices, faces, edges): should stay constant; smoothing
+  changes positions, not connectivity.
+- **Average / max vertex displacement**: how far vertices moved from the
+  original.
+- **Bounding box diagonal, surface area, volume**: size measures; a decrease
+  indicates shrinkage. Volume is available only for closed, watertight meshes.
+- **Roughness energy**: the average distance from each vertex to the average of
+  its neighbors (mean, max, and RMS). Lower usually means smoother geometry. A
+  method can lower roughness while shrinking the mesh, so read it alongside the
+  size metrics.
+
+## Noisy Mesh Experiment
+
+The sidebar controls add controlled, reproducible noise to the working mesh:
+
+- **Noise strength** scales displacement relative to the median edge length, so
+  noise stays proportional to mesh resolution and cannot explode the mesh.
+- **Noise seed** makes the result reproducible; the same seed gives the same
+  noise, a different seed gives different noise.
+- **Noise mode**: along vertex normals (falling back to random 3D displacement
+  for degenerate normals) or random 3D displacement.
+
+Noise changes only the working mesh; the clean original is preserved and used in
+the before/after comparison. Noise adds a clearly labeled step to the smoothing
+history, and "Reset to clean original" restores the clean mesh.
+
+## Which Methods Support Which Mesh Types
+
+| Mesh          | Type     | Uniform | Taubin | Cotangent |
+| ------------- | -------- | ------- | ------ | --------- |
+| Cube          | quad     | yes     | yes    | no        |
+| Plane/grid    | quad     | yes     | yes    | no        |
+| Low-poly sphere | triangle | yes   | yes    | yes       |
+| Cylinder      | mixed    | yes     | yes    | no        |
+| pyramid.obj   | triangle | yes     | yes    | yes       |
+
+Cotangent smoothing requires a triangle-only mesh. On other meshes it shows a
+clear warning and leaves the mesh unchanged instead of producing wrong geometry.
+
+## Known Limitations
+
+- Cotangent smoothing supports triangle meshes only; negative cotangent weights
+  (from obtuse triangles) are clamped to zero for stability, which is a
+  simplification of the exact operator.
 - Uploaded OBJ files may be triangulated by Trimesh during parsing.
 - Volume is available only for closed, watertight meshes.
-- Local soft regions use graph distance through mesh connectivity, not direct
-  Euclidean distance.
-- Vertex picking is through a numeric center vertex slider; there is no direct
-  mouse picking in the 3D viewer.
-- The overlay view is a visual aid, not a signed distance or geometric error
-  field.
+- Local soft regions use graph distance through connectivity, not Euclidean
+  distance.
+- Vertex selection (soft center and inspector) uses numeric sliders; there is no
+  direct mouse picking in the 3D viewer.
+- The overlay view is a visual aid, not a signed-distance error field.
 - Rendering is intentionally simple so the lesson stays focused on smoothing.
 
-## Future Work Focused Only on This Lab
+## Future Work (focused only on this lab)
 
 - Lecture notes integration refinement.
 - Optional direct vertex picking in the 3D viewer.
+- More mesh examples.
+- Additional smoothing methods, clearly labeled as future research (e.g.
+  bilateral or implicit/backward-Euler smoothing).
