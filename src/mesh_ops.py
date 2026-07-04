@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,6 +20,17 @@ class FaceNormalData:
     centers: np.ndarray
     normals: np.ndarray
     areas: np.ndarray
+
+
+@dataclass(frozen=True)
+class SoftSelectionData:
+    """Graph distances and local smoothing weights from a center vertex."""
+
+    center_index: int
+    radius: int
+    falloff_type: str
+    distances: np.ndarray
+    weights: np.ndarray
 
 
 def copy_with_vertices(mesh: MeshData, vertices: np.ndarray, name: str | None = None) -> MeshData:
@@ -166,6 +177,153 @@ def laplacian_smooth(
     return copy_with_vertices(mesh, vertices)
 
 
+def compute_soft_selection_weights(
+    mesh: MeshData,
+    center_index: int,
+    radius: int,
+    falloff_type: str = "linear",
+) -> SoftSelectionData:
+    """Compute graph-distance soft-selection weights from a center vertex."""
+    safe_center = _clamp_vertex_index(mesh, center_index)
+    safe_radius = max(0, int(radius))
+    distances = graph_distances_from_vertex(mesh, safe_center)
+    weights = np.zeros(mesh.vertex_count, dtype=float)
+
+    if not mesh.valid or mesh.vertex_count == 0:
+        return SoftSelectionData(
+            center_index=safe_center,
+            radius=safe_radius,
+            falloff_type=falloff_type,
+            distances=distances,
+            weights=weights,
+        )
+
+    if safe_radius == 0:
+        weights[safe_center] = 1.0
+    else:
+        reachable = np.isfinite(distances)
+        within_radius = reachable & (distances <= safe_radius)
+        t = np.zeros(mesh.vertex_count, dtype=float)
+        t[within_radius] = np.clip(distances[within_radius] / safe_radius, 0.0, 1.0)
+        if falloff_type == "smoothstep":
+            smooth = 3.0 * t**2 - 2.0 * t**3
+            weights[within_radius] = 1.0 - smooth[within_radius]
+        else:
+            weights[within_radius] = np.maximum(0.0, 1.0 - t[within_radius])
+
+    weights[weights <= EPSILON] = 0.0
+    return SoftSelectionData(
+        center_index=safe_center,
+        radius=safe_radius,
+        falloff_type="smoothstep" if falloff_type == "smoothstep" else "linear",
+        distances=distances,
+        weights=weights,
+    )
+
+
+def graph_distances_from_vertex(mesh: MeshData, center_index: int) -> np.ndarray:
+    """Return unweighted one-ring graph distances from one vertex."""
+    distances = np.full(mesh.vertex_count, np.inf, dtype=float)
+    if not mesh.valid or mesh.vertex_count == 0:
+        return distances
+
+    safe_center = _clamp_vertex_index(mesh, center_index)
+    adjacency = build_vertex_adjacency(mesh)
+    distances[safe_center] = 0.0
+    queue: deque[int] = deque([safe_center])
+
+    while queue:
+        vertex_index = queue.popleft()
+        next_distance = distances[vertex_index] + 1.0
+        for neighbor in adjacency[vertex_index]:
+            if np.isfinite(distances[neighbor]):
+                continue
+            distances[neighbor] = next_distance
+            queue.append(neighbor)
+
+    return distances
+
+
+def laplacian_smooth_local(
+    mesh: MeshData,
+    iterations: int,
+    strength: float,
+    center_index: int,
+    radius: int,
+    falloff_type: str = "linear",
+    preserve_boundary: bool = True,
+) -> MeshData:
+    """Apply neighbor-average smoothing with graph-distance soft weights."""
+    if not mesh.valid:
+        return clone_mesh(mesh)
+
+    safe_iterations = max(0, int(iterations))
+    safe_strength = float(np.clip(strength, 0.0, 1.0))
+    vertices = mesh.vertices.astype(float, copy=True)
+    adjacency = build_vertex_adjacency(mesh)
+    boundary_vertices = find_boundary_vertices(mesh) if preserve_boundary else set()
+    soft_selection = compute_soft_selection_weights(
+        mesh,
+        center_index=center_index,
+        radius=radius,
+        falloff_type=falloff_type,
+    )
+
+    for _ in range(safe_iterations):
+        next_vertices = vertices.copy()
+        for vertex_index, neighbors in enumerate(adjacency):
+            local_weight = soft_selection.weights[vertex_index]
+            if (
+                vertex_index in boundary_vertices
+                or not neighbors
+                or local_weight <= EPSILON
+            ):
+                continue
+            neighbor_average = vertices[list(neighbors)].mean(axis=0)
+            next_vertices[vertex_index] = (
+                vertices[vertex_index]
+                + safe_strength * local_weight * (neighbor_average - vertices[vertex_index])
+            )
+        vertices = next_vertices
+
+    return copy_with_vertices(mesh, vertices)
+
+
+def affected_soft_selection_vertices(
+    mesh: MeshData,
+    center_index: int,
+    radius: int,
+    falloff_type: str = "linear",
+    preserve_boundary: bool = True,
+) -> dict[str, int | float | str]:
+    """Return a compact summary of the local smoothing affected region."""
+    soft_selection = compute_soft_selection_weights(
+        mesh,
+        center_index=center_index,
+        radius=radius,
+        falloff_type=falloff_type,
+    )
+    nonzero = soft_selection.weights > EPSILON
+    boundary_vertices = find_boundary_vertices(mesh) if preserve_boundary else set()
+    movable_nonzero = [
+        vertex_index
+        for vertex_index, is_nonzero in enumerate(nonzero)
+        if is_nonzero and vertex_index not in boundary_vertices
+    ]
+    included_distances = soft_selection.distances[nonzero]
+    finite_included = included_distances[np.isfinite(included_distances)]
+    max_distance = float(finite_included.max()) if finite_included.size else 0.0
+
+    return {
+        "center_vertex": soft_selection.center_index,
+        "radius": soft_selection.radius,
+        "falloff": soft_selection.falloff_type,
+        "affected_vertices": int(nonzero.sum()),
+        "movable_affected_vertices": len(movable_nonzero),
+        "max_graph_distance_included": max_distance,
+    }
+
+
 def _normalize_rows(vectors: np.ndarray) -> np.ndarray:
     """Safely normalize each vector row, leaving near-zero rows unchanged."""
     normalized = np.zeros_like(vectors, dtype=float)
@@ -182,3 +340,10 @@ def _face_edges(face: list[int]) -> list[tuple[int, int]]:
         for index in range(len(face))
         if face[index] != face[(index + 1) % len(face)]
     ]
+
+
+def _clamp_vertex_index(mesh: MeshData, vertex_index: int) -> int:
+    """Clamp a vertex index to the valid mesh range."""
+    if mesh.vertex_count <= 0:
+        return 0
+    return int(np.clip(int(vertex_index), 0, mesh.vertex_count - 1))

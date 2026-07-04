@@ -53,6 +53,62 @@ The metrics panel compares the original mesh with the current working mesh:
 Displacement is shown as N/A if the original and current meshes do not have the
 same vertex count. Volume is shown as N/A for open or non-watertight meshes.
 
+## Before / After Comparison
+
+The comparison view shows the unchanged original mesh and the current working
+mesh after smoothing. This gives students a direct visual way to inspect
+shrinkage and boundary behavior.
+
+The app supports:
+
+- Side-by-side comparison with original mesh on the left and current mesh on
+  the right.
+- Overlay comparison with the original mesh as wireframe and the current mesh
+  as shaded geometry.
+- Original-only and current-only views for focused inspection.
+
+The original mesh is replaced only when the user switches source or uploads a
+new valid OBJ. Smoothing changes only the current working mesh.
+
+## Local / Soft Smoothing
+
+Local / soft smoothing connects the smoothing experiment to the lecture idea of
+soft selection. Instead of smoothing every movable vertex equally, the app lets
+students choose a center vertex and apply smoothing with a graph-distance
+falloff around that center.
+
+The center vertex receives the strongest smoothing weight. Vertices farther
+away through mesh connectivity receive smaller weights, and vertices outside
+the radius are unchanged. Boundary preservation still keeps boundary vertices
+fixed when enabled.
+
+To try it:
+
+1. Choose a mesh.
+2. Set Smoothing mode to Local / soft smoothing.
+3. Choose a center vertex index.
+4. Set the soft selection radius in graph steps.
+5. Choose linear or smoothstep falloff.
+6. Apply one or more iterations.
+7. Compare before/after views, metrics, and smoothing history.
+
+## Lecture Notes Companion
+
+The Lecture Notes Companion maps lecture concepts to interactive visual
+experiments in the app. Each entry includes:
+
+- Lecture idea.
+- Where to try it in the app.
+- What students should observe.
+
+The mapping covers polygonal meshes, mesh data and connectivity, face normals,
+vertex normals, neighbor-average smoothing, repeated smoothing and shrinkage,
+local/soft smoothing, and boundary preservation.
+
+The app also includes a lightweight Scribe Notes Placeholder. A future version
+can add notes transcribed from the lecture recording and link each paragraph to
+the matching visual experiment.
+
 ## What Shrinkage Metrics Mean
 
 Neighbor-average smoothing repeatedly moves each vertex toward its connected
@@ -73,8 +129,12 @@ positions without changing faces or edges.
 - Average and area-weighted vertex normal visualization.
 - Neighbor-average smoothing with adjustable iteration count.
 - Smoothing strength, also called lambda in the lecture formula.
+- Local / soft smoothing with graph-distance falloff from a chosen center
+  vertex.
 - Shape shrinkage after repeated smoothing.
 - Boundary preservation on open meshes such as the plane/grid.
+- Before/after visual comparison between original and current mesh.
+- Lecture concept mappings tied to app actions and observations.
 - Smoothing history over repeated actions.
 - Reset behavior for returning to the original mesh.
 
@@ -90,8 +150,12 @@ positions without changing faces or edges.
 - Normal length control.
 - Vertex normal weighting control.
 - Neighbor-average smoothing.
+- Local / soft smoothing connected to soft selection.
 - Boundary vertex preservation.
 - Guided lecture walkthrough.
+- Before/after comparison with side-by-side and overlay modes.
+- Lecture Notes Companion with concept-to-control mappings.
+- Scribe Notes Placeholder for future lecture transcript integration.
 - Original/current smoothing observation metrics.
 - Smoothing history table and change chart.
 - Reset to the original loaded or generated mesh.
@@ -133,21 +197,49 @@ the local URL printed in the terminal.
 4. Toggle face normals and vertex normals.
 5. Apply one smoothing iteration.
 6. Apply many smoothing iterations.
-7. Watch the observation metrics and history table update.
-8. Compare boundary preservation on and off for the plane/grid.
-9. Reset and try another mesh.
+7. Try Local / soft smoothing with a center vertex and graph radius.
+8. Use the Before / After Comparison section to inspect visual change.
+9. Read the Lecture Notes Companion entries for the matching lecture idea.
+10. Watch the observation metrics and history table update.
+11. Compare boundary preservation on and off for the plane/grid.
+12. Reset and try another mesh.
+
+## Suggested 2-3 Minute Demo Flow
+
+1. Open with the cube or low-poly sphere and point out the mesh statistics:
+   vertices, faces, edges, and mesh type.
+2. Switch display modes between solid, wireframe, points, and shaded wireframe
+   to connect the viewer to polygonal mesh structure.
+3. Toggle face normals and vertex normals briefly to show orientation cues from
+   the lecture.
+4. Apply one global smoothing iteration with moderate strength and explain that
+   each vertex moves toward the average of its neighbors.
+5. Apply several more iterations and use the metrics plus history chart to show
+   average displacement, bounding-box shrinkage, and surface-area change.
+6. Open Before / After Comparison, then switch between side-by-side and overlay
+   to show that the original mesh is preserved while the current mesh changes.
+7. Switch to the plane/grid and compare smoothing with boundary preservation on
+   and off to show why open mesh boundaries need special handling.
+8. Switch to Local / soft smoothing, choose a center vertex and graph radius,
+   and apply smoothing to show a localized effect with distance falloff.
+9. Reset the mesh and state the main takeaway: the lab turns lecture concepts
+   about connectivity, normals, smoothing, shrinkage, boundaries, and soft
+   selection into live experiments.
 
 ## Current Limitations
 
 - The lab covers neighbor-average smoothing only.
 - Uploaded OBJ files may be triangulated by Trimesh during parsing.
-- There is no side-by-side before/after view yet.
 - Volume is available only for closed, watertight meshes.
-- Smoothing is applied globally to all movable vertices.
+- Local soft regions use graph distance through mesh connectivity, not direct
+  Euclidean distance.
+- Vertex picking is through a numeric center vertex slider; there is no direct
+  mouse picking in the 3D viewer.
+- The overlay view is a visual aid, not a signed distance or geometric error
+  field.
 - Rendering is intentionally simple so the lesson stays focused on smoothing.
 
 ## Future Work Focused Only on This Lab
 
-- Clearer side-by-side before/after comparison.
-- Local or soft smoothing connected to soft selection.
-- Integrating scribe notes from the lecture.
+- Lecture notes integration refinement.
+- Optional direct vertex picking in the 3D viewer.

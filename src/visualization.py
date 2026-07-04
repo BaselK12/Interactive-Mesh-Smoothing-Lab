@@ -38,11 +38,12 @@ def make_plotter(
     show_vertex_normals: bool = False,
     normal_length: float = 0.25,
     vertex_normal_weighting: str = "average",
+    window_size: tuple[int, int] = (820, 560),
 ):
     """Create a PyVista plotter for the selected display mode."""
     import pyvista as pv
 
-    plotter = pv.Plotter(window_size=(820, 560), border=False)
+    plotter = pv.Plotter(window_size=window_size, border=False)
     plotter.set_background(background_color)
     polydata = mesh_to_pyvista(mesh)
 
@@ -86,6 +87,43 @@ def make_plotter(
         show_vertex_normals=show_vertex_normals,
         normal_length=normal_length,
         vertex_normal_weighting=vertex_normal_weighting,
+    )
+
+    if show_axes:
+        plotter.add_axes(line_width=2)
+
+    plotter.view_isometric()
+    plotter.reset_camera()
+    return plotter
+
+
+def make_overlay_plotter(
+    original_mesh: MeshData,
+    current_mesh: MeshData,
+    background_color: str = "white",
+    show_axes: bool = True,
+    window_size: tuple[int, int] = (820, 560),
+):
+    """Create a comparison plotter with original wireframe over current mesh."""
+    import pyvista as pv
+
+    plotter = pv.Plotter(window_size=window_size, border=False)
+    plotter.set_background(background_color)
+
+    current_polydata = mesh_to_pyvista(current_mesh)
+    original_polydata = mesh_to_pyvista(original_mesh)
+    plotter.add_mesh(
+        current_polydata,
+        color="#8fb3d9",
+        opacity=0.78,
+        show_edges=False,
+        smooth_shading=False,
+    )
+    plotter.add_mesh(
+        original_polydata,
+        style="wireframe",
+        color="#111827",
+        line_width=2,
     )
 
     if show_axes:
