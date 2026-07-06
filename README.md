@@ -20,16 +20,23 @@ the current state.
 
 - **Playground**: the default visual learning area. It contains presets, live
   preview controls, the main overlay viewer, short explanations, and simple
-  metric cards. Presets change control settings only; they keep the currently
-  selected sample or uploaded mesh.
+  metric cards. The app opens on the clean original mesh with zero smoothing
+  iterations so the first visible change is caused by a deliberate control move.
+  Presets switch to sample meshes that make the selected concept visible.
 - **Method Comparison**: runs Uniform Laplacian, Taubin, and Cotangent-weighted
   smoothing on the same committed input mesh, shows visual result cards, and
   ranks the tradeoffs.
 - **Step Inspector**: shows the one-vertex smoothing computation: neighbors,
   average or weights, displacement, predicted new position, and a vertex-level
   visual.
+- **Guided Learning**: step-by-step lecture prompts for polygonal meshes,
+  connectivity, normals, smoothing, shrinkage, boundaries, local smoothing, and
+  method comparison.
+- **Student Exercises**: seven short exercises that ask students to set up an
+  experiment, predict an observation, and check it against the viewer and
+  metrics.
 - **Advanced Metrics**: full observation tables, roughness details, smoothing
-  history, charts, and the downloadable Markdown summary.
+  history, charts, and the current-experiment Markdown summary download.
 
 ## Implemented Smoothing Concepts
 
@@ -53,6 +60,8 @@ new smoothing algorithms are included.
 
 Live Preview is on by default in the Playground tab.
 
+- On first load, noise is off and smoothing iterations are 0, so the viewer is a
+  clean original baseline.
 - Changing method, iterations, lambda, Taubin mu, noise strength, noise seed,
   boundary preservation, or local smoothing controls recomputes the preview mesh.
 - The preview starts from the committed working mesh.
@@ -94,13 +103,17 @@ local URL printed in the terminal.
 
 1. Open **Playground**.
 2. Click the **Remove noise** preset.
-3. Move lambda and iterations; point out that the preview updates live.
-4. Keep the overlay view on and explain shrinkage using the original wireframe
-   versus the shaded preview.
+3. Move lambda and iterations; point out that the status line changes from a
+   noisy preview to a smoothed preview and the metric cards update.
+4. Use **See shrinkage** to show the original wireframe versus the shaded
+   preview on the low-poly sphere.
 5. Click **Method Comparison**.
 6. Run the comparison and show Uniform Laplacian versus Taubin shrinkage.
-7. Open **Step Inspector**.
-8. Show one vertex moving toward its neighbor average.
+7. Use **Boundary preservation** and toggle the boundary checkbox on Plane/grid.
+8. Use **Local soft smoothing** and change the radius to show the highlighted
+   affected region.
+9. Open **Step Inspector** and show one vertex moving toward its neighbor
+   average.
 
 See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for a fuller script.
 
@@ -129,6 +142,8 @@ The Playground shows simple cards first:
   mesh.
 - **Topology changed?**: smoothing should move vertices without changing faces
   or edges.
+- **Boundary moved?**: appears on open meshes and compares boundary movement to
+  interior movement.
 
 The **Advanced Metrics** tab contains the full tables, roughness breakdown,
 history chart, and Markdown summary download.

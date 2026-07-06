@@ -39,6 +39,8 @@ def make_plotter(
     normal_length: float = 0.25,
     vertex_normal_weighting: str = "average",
     window_size: tuple[int, int] = (820, 560),
+    highlight_vertices: list[int] | np.ndarray | None = None,
+    center_vertex: int | None = None,
 ):
     """Create a PyVista plotter for the selected display mode."""
     import pyvista as pv
@@ -88,6 +90,12 @@ def make_plotter(
         normal_length=normal_length,
         vertex_normal_weighting=vertex_normal_weighting,
     )
+    _add_vertex_highlights(
+        plotter,
+        mesh,
+        highlight_vertices=highlight_vertices,
+        center_vertex=center_vertex,
+    )
 
     if show_axes:
         plotter.add_axes(line_width=2)
@@ -103,6 +111,8 @@ def make_overlay_plotter(
     background_color: str = "white",
     show_axes: bool = True,
     window_size: tuple[int, int] = (820, 560),
+    highlight_vertices: list[int] | np.ndarray | None = None,
+    center_vertex: int | None = None,
 ):
     """Create a comparison plotter with original wireframe over current mesh."""
     import pyvista as pv
@@ -128,6 +138,12 @@ def make_overlay_plotter(
         line_width=2,
     )
     _add_displacement_lines(plotter, original_mesh, current_mesh)
+    _add_vertex_highlights(
+        plotter,
+        current_mesh,
+        highlight_vertices=highlight_vertices,
+        center_vertex=center_vertex,
+    )
 
     if show_axes:
         plotter.add_axes(line_width=2)
@@ -275,6 +291,40 @@ def _add_displacement_lines(plotter, original_mesh: MeshData, current_mesh: Mesh
         points[start_point_index + 1] = current_mesh.vertices[vertex_index]
         lines[line_index] = [2, start_point_index, start_point_index + 1]
     plotter.add_mesh(pv.PolyData(points, lines=lines.ravel()), color="#f97316", line_width=2)
+
+
+def _add_vertex_highlights(
+    plotter,
+    mesh: MeshData,
+    highlight_vertices: list[int] | np.ndarray | None,
+    center_vertex: int | None,
+) -> None:
+    """Draw optional affected-region and center-vertex markers."""
+    if not mesh.valid or mesh.vertex_count == 0:
+        return
+
+    if highlight_vertices is not None:
+        indices = np.asarray(highlight_vertices, dtype=int).reshape(-1)
+        indices = indices[(indices >= 0) & (indices < mesh.vertex_count)]
+        if center_vertex is not None:
+            indices = indices[indices != int(center_vertex)]
+        if indices.size:
+            indices = np.unique(indices)
+            plotter.add_points(
+                mesh.vertices[indices],
+                color="#f59e0b",
+                point_size=14,
+                render_points_as_spheres=True,
+            )
+
+    if center_vertex is not None:
+        safe_center = int(np.clip(int(center_vertex), 0, mesh.vertex_count - 1))
+        plotter.add_points(
+            mesh.vertices[[safe_center]],
+            color="#dc2626",
+            point_size=22,
+            render_points_as_spheres=True,
+        )
 
 
 def _line_segments_to_pyvista(starts: np.ndarray, directions: np.ndarray, length: float):
