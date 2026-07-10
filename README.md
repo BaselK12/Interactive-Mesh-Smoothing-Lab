@@ -9,70 +9,78 @@ computer graphics topic: **mesh smoothing**. The main learning loop is:
 
 1. Change a control.
 2. Watch the mesh preview update immediately.
-3. Read the short explanation and quick metric cards.
+3. Read the metric strip and look-for hint under the viewer, and the short
+   explanation beside it.
 4. Commit the preview only when you want it to become the current working mesh.
 
-The app keeps the original clean mesh, committed working mesh, and temporary
-preview mesh separate so students can experiment without accidentally overwriting
-the current state.
+The app keeps four named mesh states separate so experiments cannot silently
+overwrite each other:
 
-## Learning Tabs
+- **Source original** — the untouched mesh from the sidebar source.
+- **Committed working mesh** — the result of committed actions; what Method
+  Comparison, the Step Inspector, and Advanced Metrics read.
+- **Noisy preview stage** — when the live preview includes noise, the noisy
+  mesh *before* smoothing (usable as a comparison input).
+- **Live preview** — the temporary result of the current controls.
 
-- **Playground**: the default visual learning area. It contains presets, live
-  preview controls, the main overlay viewer, short explanations, and simple
+## Learning Sections
+
+Navigation renders one section at a time (heavy 3D viewers are not rebuilt for
+hidden sections):
+
+- **Playground**: the default visual learning area — presets, live preview
+  controls, the main viewer with a sticky metric strip, short explanations, and
   metric cards. The app opens on the clean original mesh with zero smoothing
-  iterations so the first visible change is caused by a deliberate control move.
-  Presets switch to sample meshes that make the selected concept visible.
+  iterations; the recommended first experiment is the **See shrinkage** preset.
 - **Method Comparison**: runs Uniform Laplacian, Taubin, and Cotangent-weighted
-  smoothing on the same committed input mesh, shows visual result cards, and
-  ranks the tradeoffs.
-- **Step Inspector**: shows the one-vertex smoothing computation: neighbors,
-  average or weights, displacement, predicted new position, and a vertex-level
-  visual.
-- **Guided Learning**: step-by-step lecture prompts for polygonal meshes,
-  connectivity, normals, smoothing, shrinkage, boundaries, local smoothing, and
-  method comparison.
-- **Student Exercises**: seven short exercises that ask students to set up an
-  experiment, predict an observation, and check it against the viewer and
-  metrics.
-- **Advanced Metrics**: full observation tables, roughness details, smoothing
-  history, charts, and the current-experiment Markdown summary download.
+  smoothing on one explicitly chosen input baseline (committed mesh, source
+  original, noisy preview stage, or live preview), shows visual result cards,
+  and reports literal metric observations. Stored results are flagged as stale
+  when their input has changed since the run.
+- **Step Inspector**: the one-vertex smoothing computation — neighbors,
+  average or cotangent weights, displacement, predicted position — honoring the
+  boundary-preservation rule the smoother actually applies.
+- **Guided Learning**: a how-to-use path, an eight-step walkthrough, and a key
+  terms reference.
+- **Student Exercises**: seven short exercises with exact control names and
+  expected observations.
+- **Advanced Metrics**: full observation tables, the roughness breakdown,
+  committed action history, and the Markdown summary download (generated from
+  the committed history, never from uncommitted widget positions).
 
 ## Implemented Smoothing Concepts
 
-- Polygonal mesh topology: vertices, edges, faces, and mesh type.
-- Connectivity and one-ring neighbor queries.
-- Face normals and vertex normals.
-- Uniform Laplacian smoothing.
-- Shrinkage from repeated averaging.
-- Boundary preservation on open meshes.
-- Local / soft-selection smoothing with graph-distance falloff.
-- Taubin smoothing to reduce shrinkage.
-- Cotangent-weighted Laplacian smoothing for triangle meshes.
-- Roughness energy, shrinkage, surface area, displacement, and topology metrics.
-- Controlled noisy-mesh experiments.
-- Method comparison and per-vertex step inspection.
+Lecture core: polygonal mesh anatomy, connectivity and one-ring neighbors, face
+and vertex normals, uniform Laplacian smoothing, shrinkage, boundary
+preservation, and local/soft-selection smoothing.
+
+Project extensions: Taubin smoothing (with a stability check on lambda/mu
+pairs), simplified cotangent-weighted smoothing for triangle meshes, controlled
+noise experiments, method comparison, and the numeric metrics.
 
 No subdivision, warping, export, advanced rendering, lecture transcription, or
 new smoothing algorithms are included.
 
 ## How Live Preview Works
 
-Live Preview is on by default in the Playground tab.
+Live Preview is on by default in the Playground.
 
-- On first load, noise is off and smoothing iterations are 0, so the viewer is a
-  clean original baseline.
-- Changing method, iterations, lambda, Taubin mu, noise strength, noise seed,
-  boundary preservation, or local smoothing controls recomputes the preview mesh.
-- The preview starts from the committed working mesh.
-- The preview does not mutate the working mesh.
-- **Commit preview as current mesh** intentionally promotes the preview to the
-  working mesh and records a history row.
-- **Reset experiment** restores the working mesh to the original clean mesh and
-  clears preview/history state.
+- On first load, noise is off and smoothing iterations are 0, so the viewer
+  shows the clean original.
+- Changing method, iterations, lambda, Taubin mu, noise controls, boundary
+  preservation, or local smoothing controls recomputes the preview from the
+  committed working mesh without mutating it.
+- A stage flag counts as "changed" only when vertices actually moved — zero
+  lambda or zero-strength noise cannot be committed or recorded as work.
+- **Commit preview as current mesh** promotes the preview to the working mesh,
+  records exactly what happened in the history, and resets the one-shot noise
+  and iteration controls to neutral, so the viewer then shows precisely the
+  committed state (the same operation is not immediately re-applied).
+- **Reset experiment** restores the clean original and neutral controls.
 
-When Live Preview is off, the app keeps the older apply-button workflow: use
-**Add noise to current mesh** and **Apply smoothing** to mutate the working mesh.
+When Live Preview is off, **Add noise to current mesh** and **Apply smoothing**
+mutate the working mesh directly. Both buttons are disabled (with an
+explanation) when their settings would do nothing.
 
 ## How to Run
 
@@ -96,69 +104,72 @@ Run the app:
 python -m streamlit run app.py
 ```
 
-Streamlit opens the app in a browser. If it does not open automatically, use the
-local URL printed in the terminal.
+Run the test suite:
+
+```bash
+python -m pytest tests
+```
 
 ## Suggested 2-3 Minute Demo Flow
 
-1. Open **Playground**.
-2. Click the **Remove noise** preset.
-3. Move lambda and iterations; point out that the status line changes from a
-   noisy preview to a smoothed preview and the metric cards update.
-4. Use **See shrinkage** to show the original wireframe versus the shaded
-   preview on the low-poly sphere.
-5. Click **Method Comparison**.
-6. Run the comparison and show Uniform Laplacian versus Taubin shrinkage.
-7. Use **Boundary preservation** and toggle the boundary checkbox on Plane/grid.
-8. Use **Local soft smoothing** and change the radius to show the highlighted
-   affected region.
-9. Open **Step Inspector** and show one vertex moving toward its neighbor
-   average.
+See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for the full script.
 
-See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for a fuller script.
+1. **Playground** → **See shrinkage** preset → read the Overlay and metric strip.
+2. **Reset experiment** → **Remove noise** preset → read the
+   start → noisy → smoothed roughness line.
+3. **Uniform vs Taubin** preset → **Method Comparison** → run from the noisy
+   preview stage.
+4. **Boundary preservation** preset → toggle the boundary checkbox.
+5. **Step Inspector** → corner vertex (pinned) vs interior vertex.
 
 ## Smoothing Methods
 
-See [docs/METHODS.md](docs/METHODS.md) for more detail.
+See [docs/METHODS.md](docs/METHODS.md) for formulas, stability conditions, and
+the documented simplifications.
 
 - **Uniform Laplacian**: each vertex moves toward the average of its one-ring
-  neighbors. Simple and connectivity-driven, but it can shrink the mesh.
-- **Taubin**: alternates a positive smoothing step with a negative correction
-  step to reduce shrinkage.
+  neighbors. Simple and connectivity-driven; usually shrinks closed meshes.
+- **Taubin**: alternates a positive step (lambda) with a negative correction
+  (mu). It reduces shrinkage **for suitable pairs** (lambda < |mu|, e.g.
+  0.5 / −0.53); unsuitable pairs amplify mid frequencies and can expand the
+  mesh, and the app warns when the current pair is unstable.
 - **Cotangent-weighted Laplacian**: weights neighbors using triangle geometry.
-  It is available only for triangle-only meshes.
+  Triangle-only; this implementation freezes the weights at the starting
+  geometry, clamps negative weights, and omits the mass term (a documented
+  teaching simplification).
 - **Local / soft smoothing**: scales uniform smoothing by graph distance from a
-  chosen center vertex.
+  chosen center vertex; the falloff choice matters only at radius 3+.
 
 ## Metrics
 
-The Playground shows simple cards first:
+The sticky strip under the viewer shows the three key numbers (roughness
+change, AABB diagonal change, average vertex movement) with the baseline named
+in each tooltip. Details:
 
-- **Roughness change**: lower usually means vertices are closer to neighbor
-  averages.
-- **Shrinkage / bounding box change**: negative means the mesh got smaller.
-- **Surface area change**: often drops as detail is smoothed away.
-- **Average vertex movement**: how far vertices moved from the original clean
-  mesh.
-- **Topology changed?**: smoothing should move vertices without changing faces
-  or edges.
-- **Boundary moved?**: appears on open meshes and compares boundary movement to
+- **Roughness (mean neighbor distance)**: the average distance from each vertex
+  to the mean of its neighbors, in mesh length units. **Scale-dependent** —
+  uniformly shrinking a mesh also lowers it, so always read it together with
+  the size metrics.
+- **AABB diagonal change**: axis-aligned bounding-box diagonal versus the
+  source original; a size proxy, not a full shape measure.
+- **Surface area change**: can rise or fall for many reasons; not a direct
+  "detail removed" score.
+- **Average vertex movement**: mean per-vertex distance from the source
+  original.
+- **Topology counts changed?**: vertex/face/edge counts only.
+- **Boundary moved?**: appears on open meshes; compares boundary movement to
   interior movement.
-
-The **Advanced Metrics** tab contains the full tables, roughness breakdown,
-history chart, and Markdown summary download.
+- **Volume**: reported only for closed meshes with consistent outward winding;
+  watertightness alone is not sufficient.
 
 ## Supported Mesh Sources
 
-Built-in meshes:
-
-- Cube
-- Plane/grid
-- Low-poly sphere
-- Cylinder
+Built-in meshes: Cube, Plane/grid, Low-poly sphere, Cylinder.
 
 OBJ upload is supported with a size limit and safe fallback. Invalid uploads
-show an error and the app falls back to the default cube.
+show an error and the app falls back to the default cube. Switching the mesh
+source resets the experiment controls to neutral (presets carry their own
+settings).
 
 ## Which Methods Support Which Mesh Types
 
@@ -168,21 +179,25 @@ show an error and the app falls back to the default cube.
 | Plane/grid | quad | yes | yes | no |
 | Low-poly sphere | triangle | yes | yes | yes |
 | Cylinder | mixed | yes | yes | no |
-| pyramid.obj | triangle | yes | yes | yes |
+| pyramid.obj | triangle (after load) | yes | yes | yes |
 
 Cotangent smoothing requires a triangle-only mesh. Unsupported meshes show a
-warning and do not produce fake cotangent output.
+warning and do not produce fake cotangent output. Note that Trimesh may
+triangulate uploaded OBJ files during parsing (pyramid.obj is authored with a
+quad base but loads as six triangles).
 
 ## Known Limitations
 
-- Cotangent smoothing supports triangle meshes only; negative cotangent weights
-  are clamped to zero for stability.
-- Uploaded OBJ files may be triangulated by Trimesh during parsing.
-- Volume is available only for closed, watertight meshes.
+- The cotangent implementation is a simplified teaching smoother (frozen
+  weights, clamped negatives, no mass matrix).
+- Taubin lambda/mu sliders allow unstable pairs by design (for exploration);
+  the app warns and flags preview expansion instead of blocking them.
+- Volume requires a closed, consistently outward-wound mesh.
 - Local soft regions use graph distance through connectivity, not Euclidean
-  distance.
-- Vertex selection uses numeric sliders; there is no direct mouse picking in
-  the 3D viewer.
-- The overlay view is a visual aid, not a signed-distance error field.
+  distance; the radius ring itself has zero weight.
+- Vertex selection uses numeric sliders; there is no mouse picking in the 3D
+  viewer.
+- Side-by-side renders both meshes in one shared scene so scale is honest;
+  Overlay remains the clearest before/after mode.
 - Live preview has a large-mesh safety guard to keep the app responsive.
 - Rendering is intentionally simple so the lesson stays focused on smoothing.

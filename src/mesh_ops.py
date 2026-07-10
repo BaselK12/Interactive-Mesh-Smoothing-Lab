@@ -348,9 +348,12 @@ def taubin_smooth(
     """Taubin lambda/mu smoothing to reduce shrinkage from plain averaging.
 
     Each iteration applies a positive uniform-Laplacian step with factor ``lam``
-    followed by a negative correction step with factor ``mu`` (mu < 0). The
-    negative step counteracts the inward pull of ordinary Laplacian smoothing so
-    the mesh keeps its size while still relaxing roughness.
+    followed by a negative correction step with factor ``mu`` (mu < 0). For
+    suitable pairs (``lam < |mu|`` with a small positive pass-band
+    ``1/lam + 1/mu``) the negative step counteracts the inward pull of ordinary
+    Laplacian smoothing so the mesh keeps its size while still relaxing
+    roughness. Unsuitable pairs amplify mid frequencies and can expand or
+    destroy the mesh; use :func:`taubin_stability` to check a pair.
     """
     if not mesh.valid:
         return clone_mesh(mesh)
@@ -367,6 +370,32 @@ def taubin_smooth(
         vertices = _uniform_laplacian_step(vertices, adjacency, boundary_vertices, mu)
 
     return copy_with_vertices(mesh, vertices)
+
+
+def taubin_stability(lam: float, mu: float, samples: int = 512) -> dict[str, float | bool | None]:
+    """Estimate the per-iteration spectral gain of a Taubin lambda/mu pair.
+
+    For the uniform umbrella operator the per-iteration transfer function is
+    ``f(w) = (1 - lam*w) * (1 - mu*w)`` with eigenvalues ``w`` in ``(0, 2]``.
+    ``max_gain`` is the largest ``|f(w)|`` over that range. Classic stable pairs
+    (for example lam=0.5, mu=-0.53) have a max gain barely above 1, so the pair
+    is reported stable when ``max_gain <= 1.01``. ``pass_band`` is
+    ``1/lam + 1/mu`` (the Taubin pass-band frequency), or ``None`` when a factor
+    is zero.
+    """
+    lam = float(lam)
+    mu = float(mu)
+    w = np.linspace(1.0e-6, 2.0, int(samples))
+    gain = np.abs((1.0 - lam * w) * (1.0 - mu * w))
+    max_gain = float(gain.max())
+    pass_band: float | None = None
+    if abs(lam) > EPSILON and abs(mu) > EPSILON:
+        pass_band = float(1.0 / lam + 1.0 / mu)
+    return {
+        "max_gain": max_gain,
+        "stable": bool(max_gain <= 1.01),
+        "pass_band": pass_band,
+    }
 
 
 def _uniform_laplacian_step(
@@ -449,6 +478,13 @@ def cotangent_smooth(
     ``supported`` flag is False (with an explanatory note and an unchanged mesh)
     when the mesh is not triangle-only, so callers never produce wrong geometry
     silently.
+
+    Teaching simplifications (documented in docs/METHODS.md): the cotangent
+    weight map is computed once from the starting geometry and reused for every
+    iteration; aggregate negative edge weights are clamped to zero; the update
+    normalizes by the positive weight sum instead of using a vertex-area mass
+    term. This is a stable classroom smoother, not a full Laplace-Beltrami
+    discretization.
     """
     if not mesh.valid:
         return SmoothingResult(clone_mesh(mesh), COTANGENT_LAPLACIAN, False, "Mesh is not valid.")
@@ -540,12 +576,22 @@ def inspect_uniform_step(
     mesh: MeshData,
     vertex_index: int,
     lam: float,
+    preserve_boundary: bool = False,
 ) -> dict[str, object]:
-    """Return the one-step uniform-Laplacian computation for a single vertex."""
+    """Return the one-step uniform-Laplacian computation for a single vertex.
+
+    When ``preserve_boundary`` is True and the vertex lies on a boundary edge,
+    ``pinned`` is True and the predicted position equals the current position,
+    matching what :func:`laplacian_smooth` actually does. The unconstrained
+    neighbor average and displacement are still reported for reference.
+    """
     safe_index = _clamp_vertex_index(mesh, vertex_index)
     adjacency = build_adjacency_lists(mesh)
     neighbors = adjacency[safe_index] if safe_index < len(adjacency) else []
     current = mesh.vertices[safe_index].astype(float)
+    boundary_set = find_boundary_vertices(mesh)
+    is_boundary = safe_index in boundary_set
+    pinned = bool(preserve_boundary and is_boundary)
     info: dict[str, object] = {
         "vertex_index": safe_index,
         "current_position": current,
@@ -553,6 +599,8 @@ def inspect_uniform_step(
         "neighbor_positions": mesh.vertices[neighbors].astype(float) if neighbors else np.empty((0, 3)),
         "valence": len(neighbors),
         "lambda": float(lam),
+        "is_boundary_vertex": is_boundary,
+        "pinned": pinned,
     }
     if not neighbors:
         info["neighbor_average"] = None
@@ -564,7 +612,8 @@ def inspect_uniform_step(
     delta = neighbor_average - current
     info["neighbor_average"] = neighbor_average
     info["displacement"] = delta
-    info["predicted_position"] = current + float(lam) * delta
+    info["unconstrained_position"] = current + float(lam) * delta
+    info["predicted_position"] = current if pinned else current + float(lam) * delta
     return info
 
 
@@ -572,15 +621,25 @@ def inspect_cotangent_step(
     mesh: MeshData,
     vertex_index: int,
     strength: float,
+    preserve_boundary: bool = False,
 ) -> dict[str, object]:
-    """Return the one-step cotangent-weighted computation for a single vertex."""
+    """Return the one-step cotangent-weighted computation for a single vertex.
+
+    Honors boundary pinning the same way :func:`cotangent_smooth` does when
+    ``preserve_boundary`` is True.
+    """
     safe_index = _clamp_vertex_index(mesh, vertex_index)
     current = mesh.vertices[safe_index].astype(float)
+    boundary_set = find_boundary_vertices(mesh)
+    is_boundary = safe_index in boundary_set
+    pinned = bool(preserve_boundary and is_boundary)
     info: dict[str, object] = {
         "vertex_index": safe_index,
         "current_position": current,
         "supported": is_triangle_mesh(mesh),
         "strength": float(strength),
+        "is_boundary_vertex": is_boundary,
+        "pinned": pinned,
     }
     if not is_triangle_mesh(mesh):
         info["note"] = (
@@ -608,7 +667,10 @@ def inspect_cotangent_step(
     weighted_target = (mesh.vertices[neighbors] * normalized[:, None]).sum(axis=0)
     info["normalized_weights"] = normalized
     info["weighted_target"] = weighted_target
-    info["predicted_position"] = current + float(strength) * (weighted_target - current)
+    info["unconstrained_position"] = current + float(strength) * (weighted_target - current)
+    info["predicted_position"] = (
+        current if pinned else current + float(strength) * (weighted_target - current)
+    )
     return info
 
 
@@ -619,9 +681,12 @@ def inspect_local_step(
     radius: int,
     strength: float,
     falloff_type: str = "linear",
+    preserve_boundary: bool = False,
 ) -> dict[str, object]:
     """Return the one-step local/soft-smoothing computation for a single vertex."""
-    base = inspect_uniform_step(mesh, vertex_index, lam=strength)
+    base = inspect_uniform_step(
+        mesh, vertex_index, lam=strength, preserve_boundary=preserve_boundary
+    )
     soft = compute_soft_selection_weights(
         mesh, center_index=center_index, radius=radius, falloff_type=falloff_type
     )
@@ -633,7 +698,7 @@ def inspect_local_step(
     base["local_weight"] = local_weight
     delta = base.get("displacement")
     current = base["current_position"]
-    if delta is None:
+    if delta is None or base.get("pinned"):
         base["effective_movement"] = None
         base["predicted_position"] = current
     else:

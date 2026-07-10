@@ -68,7 +68,15 @@ def compute_shape_metrics(mesh: MeshData) -> dict[str, int | float | bool | None
 
     metrics["surface_area"] = _finite_float(trimesh_mesh.area)
     metrics["is_watertight"] = bool(trimesh_mesh.is_watertight)
-    if metrics["is_watertight"]:
+    # Volume is trustworthy only for closed meshes with consistent winding and a
+    # nonzero signed volume. Watertightness alone is not enough: oppositely
+    # oriented closed components cancel, and a single flipped face inflates the
+    # signed sum while the mesh still reports watertight.
+    if (
+        metrics["is_watertight"]
+        and bool(trimesh_mesh.is_winding_consistent)
+        and abs(float(trimesh_mesh.volume)) > EPSILON
+    ):
         metrics["volume"] = _finite_float(abs(float(trimesh_mesh.volume)))
 
     return metrics

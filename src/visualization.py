@@ -153,6 +153,92 @@ def make_overlay_plotter(
     return plotter
 
 
+def make_side_by_side_plotter(
+    original_mesh: MeshData,
+    current_mesh: MeshData,
+    display_mode: str = "Wireframe + shaded mesh",
+    background_color: str = "white",
+    show_axes: bool = False,
+    window_size: tuple[int, int] = (820, 460),
+    highlight_vertices: list[int] | np.ndarray | None = None,
+    center_vertex: int | None = None,
+):
+    """Render original (left) and current (right) in ONE scene and camera.
+
+    Both meshes share a single renderer, camera, and world scale, so a size
+    difference between them is a real geometric difference — unlike two
+    independently auto-fitted viewers, which normalize each mesh to the same
+    on-screen size and hide shrinkage.
+    """
+    import pyvista as pv
+
+    plotter = pv.Plotter(window_size=window_size, border=False)
+    plotter.set_background(background_color)
+
+    original_polydata = mesh_to_pyvista(original_mesh)
+    current_polydata = mesh_to_pyvista(current_mesh)
+
+    # Place the current mesh to the right of the original with a fixed gap
+    # derived from the ORIGINAL mesh so the offset cannot shrink with the copy.
+    original_bounds = np.asarray(original_polydata.bounds, dtype=float)
+    original_width = max(original_bounds[1] - original_bounds[0], 1.0e-6)
+    offset = np.array([1.6 * original_width, 0.0, 0.0])
+    current_polydata.points = current_polydata.points + offset
+
+    for polydata, edge_color, face_color in (
+        (original_polydata, "#1f2933", "#cbd5e1"),
+        (current_polydata, "#1f2933", "#8fb3d9"),
+    ):
+        if display_mode == "Wireframe":
+            plotter.add_mesh(polydata, style="wireframe", color="#243b53", line_width=2)
+        elif display_mode == "Points/vertices":
+            plotter.add_points(
+                polydata.points, color="#c2410c", point_size=10, render_points_as_spheres=True
+            )
+        elif display_mode == "Solid shaded mesh":
+            plotter.add_mesh(polydata, color=face_color, show_edges=False, smooth_shading=False)
+        else:
+            plotter.add_mesh(
+                polydata,
+                color=face_color,
+                show_edges=True,
+                edge_color=edge_color,
+                line_width=1,
+                smooth_shading=False,
+            )
+
+    if highlight_vertices is not None or center_vertex is not None:
+        # Highlights refer to the current mesh, which is drawn shifted.
+        indices = None
+        if highlight_vertices is not None:
+            indices = np.asarray(highlight_vertices, dtype=int).reshape(-1)
+            indices = indices[(indices >= 0) & (indices < current_mesh.vertex_count)]
+            if center_vertex is not None:
+                indices = indices[indices != int(center_vertex)]
+        if indices is not None and indices.size:
+            plotter.add_points(
+                current_mesh.vertices[np.unique(indices)] + offset,
+                color="#f59e0b",
+                point_size=12,
+                render_points_as_spheres=True,
+            )
+        if center_vertex is not None and current_mesh.vertex_count > 0:
+            safe_center = int(np.clip(int(center_vertex), 0, current_mesh.vertex_count - 1))
+            plotter.add_points(
+                current_mesh.vertices[[safe_center]] + offset,
+                color="#dc2626",
+                point_size=18,
+                render_points_as_spheres=True,
+            )
+
+    if show_axes:
+        plotter.add_axes(line_width=2)
+
+    plotter.view_isometric()
+    plotter.reset_camera()
+    return plotter
+
+
 def make_step_inspector_plotter(
     mesh: MeshData,
     vertex_index: int,

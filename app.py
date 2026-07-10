@@ -26,17 +26,17 @@ from src.mesh_ops import (
     find_boundary_vertices,
     graph_distances_from_vertex,
     inspect_cotangent_step,
-    inspect_local_step,
     inspect_uniform_step,
     is_triangle_mesh,
-    laplacian_smooth,
     laplacian_smooth_local,
+    taubin_stability,
 )
 from src.sample_meshes import create_sample_mesh, sample_mesh_names
 from src.visualization import (
     DISPLAY_MODES,
     make_overlay_plotter,
     make_plotter,
+    make_side_by_side_plotter,
     make_step_inspector_plotter,
     plotter_to_html,
 )
@@ -63,7 +63,9 @@ NORMAL_LENGTH_KEY = "normal_length"
 VERTEX_NORMAL_WEIGHTING_KEY = "vertex_normal_weighting"
 LIVE_PREVIEW_KEY = "live_preview_enabled"
 PREVIEW_MESH_KEY = "preview_mesh"
-PREVIEW_NOTE_KEY = "preview_note"
+PREVIEW_NOISY_STAGE_KEY = "preview_noisy_stage"
+WORKING_VERSION_KEY = "working_mesh_version"
+FLASH_MESSAGE_KEY = "flash_message"
 NOISE_ENABLED_KEY = "noise_enabled"
 NOISE_STRENGTH_KEY = "noise_strength"
 NOISE_SEED_KEY = "noise_seed"
@@ -78,12 +80,15 @@ FALLOFF_TYPE_KEY = "falloff_type"
 PLAYGROUND_COMPARISON_KEY = "playground_comparison_mode"
 PRESET_MESSAGE_KEY = "preset_message"
 RESET_REQUESTED_KEY = "reset_requested"
+PRESET_SOURCE_SWITCH_KEY = "preset_source_switch"
 DEMO_MODIFIER_KEY = "demo_modifier"
 DEMO_NONE = "None"
 DEMO_GRID_BUMP = "Grid bump preview"
-COMPARISON_MODES = ["Side-by-side", "Overlay", "Original only", "Current only"]
+COMPARISON_INPUT_KEY = "method_comparison_input_choice"
+ACTIVE_SECTION_KEY = "active_learning_section"
+INSPECT_BOUNDARY_KEY = "inspect_preserve_boundary"
 PLAYGROUND_COMPARISON_MODES = ["Overlay", "Side-by-side", "Original only", "Current only"]
-LEARNING_TABS = [
+LEARNING_SECTIONS = [
     "Playground",
     "Method Comparison",
     "Step Inspector",
@@ -94,8 +99,20 @@ LEARNING_TABS = [
 SMOOTHING_MODES = ["Global smoothing", "Local / soft smoothing"]
 FALLOFF_TYPES = ["linear", "smoothstep"]
 TAUBIN_DEFAULT_MU = -0.53
+TAUBIN_STABLE_LAMBDA = 0.5
 LIVE_PREVIEW_VERTEX_LIMIT = 50000
 LIVE_PREVIEW_WORK_LIMIT = 500000
+ROUGHNESS_LABEL = "Roughness (mean neighbor distance)"
+ROUGHNESS_CAPTION = (
+    "Roughness here is the mean distance from each vertex to the average of its "
+    "neighbors, in mesh length units. It is scale-dependent: uniformly shrinking "
+    "a mesh also lowers this number, so always read it together with the size "
+    "metrics."
+)
+COMPARISON_INPUT_WORKING = "Committed working mesh"
+COMPARISON_INPUT_ORIGINAL = "Source original"
+COMPARISON_INPUT_NOISY = "Noisy preview stage (before smoothing)"
+COMPARISON_INPUT_PREVIEW = "Current live preview"
 
 
 def _load_uploaded_mesh(file_bytes: bytes, file_name: str) -> MeshData:
@@ -114,27 +131,6 @@ def _render_statistics(mesh: MeshData) -> None:
     st.metric("Unique edges", stats["unique_edges"])
     st.write(f"Mesh type: **{stats['mesh_type']}**")
     st.write(f"Source: `{mesh.source}`")
-
-
-def _render_lab_intro() -> None:
-    """Render the landing explanation for the lecture lab."""
-    st.markdown(
-        """
-        An interactive visual lecture companion for the mesh modeling lecture.
-        Use the controls beside the viewer to connect each explanation to a
-        visible mesh result.
-
-        This lab is a focused deep dive into mesh smoothing:
-
-        - A polygonal mesh is made of vertices, edges, and faces.
-        - Smoothing moves each vertex toward the average of its neighbors.
-        - Add controlled noise to build a clean -> noisy -> smoothed experiment.
-        - Compare uniform Laplacian, Taubin, and cotangent-weighted smoothing.
-        - Measure roughness energy and shrinkage, not just look at the shape.
-        - Inspect the exact one-step computation for a single vertex.
-        - See why repeated smoothing shrinks meshes and how boundaries behave.
-        """
-    )
 
 
 def _render_guided_walkthrough() -> None:
@@ -157,32 +153,39 @@ def _render_guided_walkthrough() -> None:
         (
             tabs[0],
             [
-                "A mesh is made of vertices, edges, and faces.",
-                "The viewer can show solid, wireframe, and points modes.",
+                "A mesh stores geometry (vertex positions) and connectivity (which vertices form each edge and face).",
+                "The same connectivity can be drawn as points, wireframe, or shaded faces.",
             ],
-            ["Switch between display modes."],
+            [
+                "Set the Playground view to 'Current only', then switch Display mode in the sidebar.",
+            ],
             [
                 "Points show vertices.",
                 "Wireframe shows edges.",
                 "Solid view shows faces and surface shape.",
+                "Changing the display never changes the mesh data itself.",
             ],
         ),
         (
             tabs[1],
             [
-                "Smoothing needs neighboring vertices.",
-                "A vertex changes based on the vertices connected to it.",
+                "Connectivity answers 'which vertices touch this one?'",
+                "The neighbors connected to a vertex by an edge form its one-ring.",
+                "Smoothing is built entirely on these one-ring neighbor queries.",
             ],
-            ["Look at mesh statistics and wireframe."],
-            ["Different meshes have different connectivity."],
+            ["Open Step Inspector and pick any vertex to see its one-ring neighbors highlighted in orange."],
+            ["Different meshes give the same vertex different neighbor counts (valence)."],
         ),
         (
             tabs[2],
             [
-                "Face normals describe face orientation.",
-                "Vertex normals are estimated from incident faces.",
+                "A face normal is the direction a face points; it follows the face's winding order.",
+                "Vertex normals are estimated by averaging incident face normals (optionally weighted by face area).",
+                "Degenerate (zero-area) faces have no meaningful normal and are skipped.",
             ],
-            ["Toggle face normals and vertex normals."],
+            [
+                "Set the Playground view to 'Current only' (normal overlays draw only in that view), then toggle face and vertex normals in the sidebar.",
+            ],
             [
                 "Cube face normals are faceted.",
                 "Vertex normals approximate smoother orientation.",
@@ -191,40 +194,44 @@ def _render_guided_walkthrough() -> None:
         (
             tabs[3],
             [
-                "Each vertex moves toward the average position of its neighbors.",
-                "Lambda controls how far it moves.",
+                "One smoothing step moves each vertex toward the average position of its one-ring neighbors.",
+                "Lambda controls the fraction of that move (0 = no movement, 1 = all the way).",
+                "All vertices update simultaneously from the old positions (a synchronous update).",
             ],
-            ["Apply one smoothing iteration."],
-            ["Pointy or sharp regions relax."],
+            ["Set smoothing iterations to 1 with lambda about 0.5."],
+            ["Pointy or sharp regions relax first; lambda 0 moves nothing."],
         ),
         (
             tabs[4],
-            ["Repeated averaging smooths the mesh but can pull it inward."],
-            ["Apply many iterations."],
-            ["Surface area, bounding box size, or volume may decrease."],
+            [
+                "Repeated neighbor averaging smooths the surface, but on closed shapes it usually also pulls vertices inward.",
+                "Lower roughness alone is not success: a collapsing mesh also reports lower roughness because the metric has length units.",
+            ],
+            ["Use the 'See shrinkage' preset (14 Uniform iterations) and watch the Overlay."],
+            ["The AABB diagonal, surface area, and volume all decrease while roughness falls."],
         ),
         (
             tabs[5],
             [
-                "Boundary edges belong to only one face.",
-                "Preserving boundary vertices keeps borders fixed on open meshes.",
+                "A boundary edge belongs to exactly one face; vertices on such edges form the open border.",
+                "Preserving boundary vertices pins the border in place. It does not prevent the interior from moving or collapsing.",
             ],
             [
-                "Use the plane/grid mesh.",
-                "Compare smoothing with boundary preservation on and off.",
+                "Use the 'Boundary preservation' preset, then toggle 'Preserve boundary vertices' off and on.",
             ],
             [
-                "Without preservation, the border can move inward.",
-                "With preservation, the border remains fixed.",
+                "Off: the border slides inward.",
+                "On: the border stays fixed while the interior bump relaxes.",
             ],
         ),
         (
             tabs[6],
             [
-                "Local smoothing behaves like a soft brush.",
-                "The center vertex gets the strongest smoothing, and graph-distance falloff fades outward.",
+                "Local smoothing behaves like a soft brush centered on one vertex.",
+                "Influence fades with graph distance: 1 graph step = crossing one edge.",
+                "Vertices exactly at the chosen radius get weight 0 (the soft edge of the brush).",
             ],
-            ["Use the Local soft smoothing preset and change the radius."],
+            ["Use the Local soft smoothing preset and change the radius; at radius 3+ also switch the falloff curve."],
             [
                 "The highlighted affected region grows as the radius increases.",
                 "Vertices outside the soft selection stay unchanged.",
@@ -233,13 +240,14 @@ def _render_guided_walkthrough() -> None:
         (
             tabs[7],
             [
-                "Different smoothing methods solve different tradeoffs.",
-                "Uniform smoothing is simple, while Taubin is designed to reduce shrinkage.",
+                "Different smoothing methods trade roughness reduction against shape preservation differently.",
+                "Taubin adds a negative correction step and reduces shrinkage for suitable lambda/mu pairs (lambda < |mu|); bad pairs can expand the mesh instead.",
+                "Cotangent weighting uses triangle geometry, so it appears only for triangle-only meshes.",
             ],
-            ["Open Method Comparison and run it from the same input mesh."],
+            ["Open Method Comparison, choose an input baseline, and run it."],
             [
-                "Roughness reduction and shrinkage do not always rank methods the same way.",
-                "Cotangent smoothing appears only when the mesh is triangle-only.",
+                "Roughness reduction and size change do not always rank methods the same way.",
+                "One Taubin iteration does two Laplacian passes, so equal iteration counts are not equal work.",
             ],
         ),
     ]
@@ -264,197 +272,39 @@ def _render_walkthrough_step(
 
 
 def _render_how_to_use_lab() -> None:
-    """Render the suggested student workflow."""
+    """Render the suggested student workflow (matches the live-preview UI)."""
     st.subheader("How to use this lab")
     st.markdown(
         """
-        1. Choose a built-in mesh.
-        2. Switch between solid, wireframe, and points to identify vertices, edges, and faces.
-        3. Toggle face normals and vertex normals.
-        4. Apply one smoothing iteration.
-        5. Apply many smoothing iterations.
-        6. Switch to local / soft smoothing and choose a center vertex.
-        7. Use the before/after comparison to inspect shrinkage.
-        8. Compare boundary preservation on/off for the plane/grid.
-        9. Reset and try another mesh.
+        1. In **Playground**, click the **See shrinkage** preset for your first experiment.
+        2. Watch the Overlay: the black wireframe is the source original, the blue shaded
+           surface is the live preview.
+        3. Change **Smoothing iterations** and **lambda** and watch the preview and the
+           metric strip under the viewer update immediately.
+        4. Click **Commit preview as current mesh** only when you want the preview to
+           become the committed working mesh (this is what Method Comparison and the
+           Step Inspector read).
+        5. Click **Reset experiment** at any time to return to the clean original.
+        6. Then explore the other presets: noise removal, boundary preservation, and
+           local soft smoothing.
         """
     )
-
-
-def _render_lecture_notes_companion() -> None:
-    """Render lecture concept notes mapped to app actions."""
-    st.subheader("Lecture Notes Companion")
-    st.markdown(
-        """
-        These notes connect lecture ideas to the visual experiments in the app.
-        Each entry points to a control, an action, and the observation to make.
-        """
-    )
-
-    concepts = [
-        {
-            "title": "Polygonal Mesh",
-            "lecture_idea": [
-                "A polygonal mesh is made of vertices, edges, and faces.",
-            ],
-            "in_app": [
-                "Use points mode to see vertices.",
-                "Use wireframe mode to see edges.",
-                "Use shaded mode to see faces.",
-            ],
-            "observe": [
-                "Changing display mode does not change the mesh.",
-                "It only changes how the same data is visualized.",
-            ],
-        },
-        {
-            "title": "Mesh Data and Connectivity",
-            "lecture_idea": [
-                "Mesh data structures store geometry and connectivity.",
-                "Connectivity lets us ask which vertices are connected to a given vertex.",
-            ],
-            "in_app": [
-                "Inspect vertex, face, and edge counts.",
-                "Use wireframe mode.",
-                "Apply smoothing.",
-            ],
-            "observe": [
-                "Smoothing depends on connectivity because each vertex moves according to its neighbors.",
-            ],
-        },
-        {
-            "title": "Face Normals",
-            "lecture_idea": [
-                "Face normals can be computed from face geometry.",
-            ],
-            "in_app": [
-                "Enable face normals.",
-                "Try the cube and low-poly sphere.",
-            ],
-            "observe": [
-                "Face normals are attached to faces.",
-                "They make the faceted structure clear.",
-            ],
-        },
-        {
-            "title": "Vertex Normals",
-            "lecture_idea": [
-                "Vertex normals can be estimated by averaging incident face normals.",
-                "Area-weighted normals account for larger faces.",
-            ],
-            "in_app": [
-                "Enable vertex normals.",
-                "Switch between average and area-weighted mode.",
-            ],
-            "observe": [
-                "Vertex normals approximate smooth surface orientation even when the mesh is polygonal.",
-            ],
-        },
-        {
-            "title": "Neighbor-Average Smoothing",
-            "lecture_idea": [
-                "Move pointy vertices to make the mesh smoother.",
-                "The new vertex position is based on the average of neighboring vertex positions.",
-            ],
-            "in_app": [
-                "Apply one smoothing iteration.",
-                "Adjust lambda/strength.",
-            ],
-            "observe": [
-                "Sharp or uneven regions relax.",
-                "Connectivity stays the same.",
-            ],
-        },
-        {
-            "title": "Local / Soft Smoothing",
-            "lecture_idea": [
-                "Soft selection affects nearby vertices more than farther vertices.",
-            ],
-            "in_app": [
-                "Choose Local / soft smoothing.",
-                "Select a center vertex.",
-                "Adjust graph radius and falloff type.",
-            ],
-            "observe": [
-                "Only part of the mesh smooths strongly.",
-                "Increasing radius affects more vertices.",
-            ],
-        },
-        {
-            "title": "Repeated Smoothing and Shrinkage",
-            "lecture_idea": [
-                "Repeated averaging causes mesh shrinkage.",
-            ],
-            "in_app": [
-                "Apply many smoothing iterations.",
-                "Watch the before/after comparison.",
-                "Watch bounding box, surface area, and volume metrics.",
-            ],
-            "observe": [
-                "The mesh becomes smoother.",
-                "It can also become smaller.",
-            ],
-        },
-        {
-            "title": "Boundary Preservation",
-            "lecture_idea": [
-                "Boundary behavior matters on open meshes.",
-            ],
-            "in_app": [
-                "Choose plane/grid.",
-                "Compare smoothing with boundary preservation on and off.",
-            ],
-            "observe": [
-                "Without preservation, the border can move inward.",
-                "With preservation, border vertices remain fixed.",
-            ],
-        },
-    ]
-
-    for index, concept in enumerate(concepts):
-        with st.expander(concept["title"], expanded=index == 0):
-            _render_concept_mapping(
-                lecture_idea=concept["lecture_idea"],
-                in_app=concept["in_app"],
-                observe=concept["observe"],
-            )
-
-
-def _render_concept_mapping(
-    lecture_idea: list[str],
-    in_app: list[str],
-    observe: list[str],
-) -> None:
-    """Render one lecture-to-app concept mapping."""
-    st.markdown("**Lecture idea**")
-    st.markdown(_bullets(lecture_idea))
-    st.markdown("**In the app**")
-    st.markdown(_bullets(in_app))
-    st.markdown("**Student should observe**")
-    st.markdown(_bullets(observe))
-
-
-def _render_scribe_notes_placeholder() -> None:
-    """Render placeholder copy for future lecture scribe notes."""
-    st.subheader("Scribe Notes Placeholder")
-    st.info(
-        "Future version: this area can include notes transcribed from the lecture "
-        "recording, with each paragraph linked to the matching visual experiment."
+    st.caption(
+        "Lecture core ideas: mesh anatomy, connectivity, normals, neighbor-average "
+        "smoothing, shrinkage, boundaries. Project extensions beyond the lecture: "
+        "Taubin smoothing, cotangent weighting, synthetic noise, and the numeric "
+        "metrics."
     )
 
 
 def _render_guided_learning_tab() -> None:
-    """Render the guided learning content that was previously unmounted."""
+    """Render the guided learning content."""
     _render_how_to_use_lab()
     st.divider()
     _render_guided_walkthrough()
     st.divider()
-    with st.expander("Lecture concept cards", expanded=False):
+    with st.expander("Key terms (quick reference)", expanded=False):
         _render_lecture_concept_cards()
-    with st.expander("Observation prompts", expanded=False):
-        _render_observation_notes()
-    with st.expander("Lecture notes companion", expanded=False):
-        _render_lecture_notes_companion()
 
 
 def _render_student_exercises() -> None:
@@ -465,46 +315,46 @@ def _render_student_exercises() -> None:
     )
     exercises = [
         (
-            "Exercise 1 - Topology stays fixed",
-            "Load Cube. Apply Uniform Laplacian for 5 iterations.",
+            "Exercise 1 - Topology counts stay fixed",
+            "Load Cube. Set Uniform Laplacian, 5 iterations, then Commit the preview.",
             "Vertex, face, and edge counts stay fixed while geometry moves.",
             "Smoothing changes positions, not connectivity.",
         ),
         (
             "Exercise 2 - Shrinkage",
-            "Load Low-poly sphere. Use Uniform Laplacian, about 20 iterations, lambda near 0.5.",
-            "Bounding box and surface area decrease.",
+            "Click the 'See shrinkage' preset (Low-poly sphere, 14 Uniform iterations, lambda 0.5).",
+            "The AABB diagonal and surface area decrease sharply in the metric strip; the Overlay shows the preview inside the original wireframe.",
             "Repeated averaging pulls closed shapes inward.",
         ),
         (
             "Exercise 3 - Boundary preservation",
-            "Use the Boundary preservation preset. Toggle Preserve boundary vertices off and on.",
-            "The border moves when preservation is off and stays pinned when it is on.",
+            "Use the 'Boundary preservation' preset. Toggle 'Preserve boundary vertices' off and on.",
+            "The grid border moves when preservation is off and stays pinned when it is on ('Boundary moved?' card flips).",
             "Boundary edges belong to only one face, so open meshes need special handling.",
         ),
         (
             "Exercise 4 - Noise removal",
-            "Use Remove noise, then adjust lambda and iterations.",
-            "Roughness drops, but high smoothing can also shrink the mesh.",
-            "Noise removal is a tradeoff between smoothness and shape preservation.",
+            "Click the 'Remove noise' preset, then read the clean -> noisy -> smoothed roughness line in the explanation panel.",
+            "The smoothed roughness is well below the noisy stage and close to the clean value, while the size stays similar. Now try lambda 0.2: the pair becomes unstable and the app warns.",
+            "Denoising is a tradeoff between smoothing away noise and preserving shape, and Taubin only works with suitable lambda/mu pairs.",
         ),
         (
             "Exercise 5 - Method comparison",
-            "Use Uniform vs Taubin, open Method Comparison, then run the comparison.",
-            "Uniform, Taubin, and cotangent smoothing rank differently across metrics.",
-            "There is no single best smoother for every goal.",
+            "Click 'Uniform vs Taubin', open Method Comparison, set the comparison input to 'Noisy preview stage (before smoothing)', and run it.",
+            "All methods start from the same noisy sphere; Uniform shrinks more, Taubin keeps size better at the shown settings.",
+            "A fair comparison needs the same input; even then, equal iterations are not equal work.",
         ),
         (
             "Exercise 6 - Local soft smoothing",
-            "Use Local soft smoothing. Try radius 1, then a larger radius.",
-            "The highlighted affected region and smoothed region grow with radius.",
-            "Soft selection localizes edits through graph distance.",
+            "Use 'Local soft smoothing'. Try radius 1, then radius 3, and at radius 3 switch the falloff curve.",
+            "The highlighted affected region and the ring-weight table grow with radius; the falloff choice changes the middle-ring weights only at radius 3 or more.",
+            "Soft selection localizes edits through graph distance; the outer ring always has weight 0.",
         ),
         (
             "Exercise 7 - Step inspector",
-            "Open Step Inspector, choose a vertex, and compare its predicted position with one smoothing step.",
-            "The vertex moves toward its neighbor average or weighted target.",
-            "The inspector connects the visible motion to the formula.",
+            "Open Step Inspector on Plane/grid. Inspect vertex 0 (a corner), then an interior vertex like 12.",
+            "The corner is reported as a pinned boundary vertex (no motion) while the interior vertex moves toward its neighbor average.",
+            "The inspector shows the real update rule, including the boundary constraint the smoother applies.",
         ),
     ]
     for title, setup, expected, why in exercises:
@@ -554,7 +404,7 @@ def _render_soft_selection_summary(
         falloff_type=falloff_type,
         preserve_boundary=preserve_boundary,
     )
-    st.caption("Soft selection region summary")
+    st.caption("Soft selection region summary (1 graph step = crossing one edge)")
     st.table(
         [
             {"Metric": "Center vertex", "Value": str(summary["center_vertex"])},
@@ -571,90 +421,30 @@ def _render_soft_selection_summary(
             },
         ]
     )
-
-
-def _render_before_after_comparison(
-    original_mesh: MeshData,
-    current_mesh: MeshData,
-    display_mode: str,
-    background_color: str,
-    show_axes: bool,
-) -> None:
-    """Render original/current visual comparison controls and viewers."""
-    st.subheader("Before / After Comparison")
-    st.markdown(
-        """
-        Use this section to compare the original mesh with the current smoothed
-        mesh. This makes smoothing and shrinkage easier to see visually.
-        """
-    )
-
-    comparison_mode = st.selectbox("Comparison mode", COMPARISON_MODES)
+    st.table(_soft_selection_ring_rows(soft_radius, falloff_type))
     st.caption(
-        "Look for inward motion, relaxed sharp features, boundary movement, and "
-        "stable topology counts while geometry changes."
+        "Vertices exactly at the radius always get weight 0 (the soft edge of the "
+        "brush), so they are highlighted as the region border but do not move."
     )
 
-    if not original_mesh.valid or not current_mesh.valid:
-        st.error("Comparison is available only when both original and current meshes are valid.")
-        return
 
-    try:
-        if comparison_mode == "Side-by-side":
-            original_column, current_column = st.columns(2)
-            with original_column:
-                st.markdown("**Original mesh**")
-                _render_mesh_plotter(
-                    original_mesh,
-                    display_mode=display_mode,
-                    background_color=background_color,
-                    show_axes=show_axes,
-                    window_size=(500, 420),
-                )
-            with current_column:
-                st.markdown("**Current mesh**")
-                _render_mesh_plotter(
-                    current_mesh,
-                    display_mode=display_mode,
-                    background_color=background_color,
-                    show_axes=show_axes,
-                    window_size=(500, 420),
-                )
-        elif comparison_mode == "Overlay":
-            st.markdown("**Overlay: original wireframe over current mesh**")
-            plotter = make_overlay_plotter(
-                original_mesh,
-                current_mesh,
-                background_color=background_color,
-                show_axes=show_axes,
-                window_size=(820, 500),
-            )
-            _render_plotter(plotter)
-        elif comparison_mode == "Original only":
-            st.markdown("**Original mesh**")
-            _render_mesh_plotter(
-                original_mesh,
-                display_mode=display_mode,
-                background_color=background_color,
-                show_axes=show_axes,
-                window_size=(820, 500),
-            )
+def _soft_selection_ring_rows(radius: int, falloff_type: str) -> list[dict[str, str]]:
+    """Build the weight-per-graph-distance rows for the current falloff."""
+    rows: list[dict[str, str]] = []
+    safe_radius = max(1, int(radius))
+    for distance in range(0, min(safe_radius, 6) + 1):
+        t = distance / safe_radius
+        if falloff_type == "smoothstep":
+            weight = 1.0 - (3.0 * t**2 - 2.0 * t**3)
         else:
-            st.markdown("**Current mesh**")
-            _render_mesh_plotter(
-                current_mesh,
-                display_mode=display_mode,
-                background_color=background_color,
-                show_axes=show_axes,
-                window_size=(820, 500),
-            )
-    except ImportError:
-        st.error(
-            "The comparison viewer requires PyVista and Panel. Install the project "
-            "dependencies with `pip install -r requirements.txt` and restart Streamlit."
+            weight = max(0.0, 1.0 - t)
+        rows.append(
+            {
+                "Graph distance": str(distance),
+                "Weight": f"{weight:.3f}",
+            }
         )
-    except Exception as exc:
-        st.error(f"Could not render the comparison view: {exc}")
+    return rows
 
 
 def _render_mesh_plotter(
@@ -709,8 +499,9 @@ def _render_smoothing_metrics(
 
     st.subheader("Smoothing Observation Metrics")
     st.caption(
-        "Topology counts should stay stable. Geometry metrics show how smoothing "
-        "changes size and shape."
+        "Baseline: source original -> committed working mesh. Topology counts "
+        "should stay stable. Geometry metrics show how smoothing changed size "
+        "and shape."
     )
 
     st.metric("Smoothing iterations applied", smoothing_steps)
@@ -754,28 +545,29 @@ def _render_smoothing_metrics(
     ]
     st.table(geometry_rows)
     if original["volume"] is None or current["volume"] is None:
-        st.caption("Volume is N/A for open or non-watertight meshes.")
+        st.caption(
+            "Volume is N/A unless the mesh is closed, watertight, and has "
+            "consistent outward winding; otherwise the signed volume is not "
+            "trustworthy."
+        )
 
     _render_roughness_metrics(original_mesh, current_mesh)
 
 
 def _render_roughness_metrics(original_mesh: MeshData, current_mesh: MeshData) -> None:
-    """Render roughness/smoothness energy for original vs current mesh."""
+    """Render the neighbor-distance roughness metric for original vs current."""
     original_roughness = compute_roughness_energy(original_mesh)
     current_roughness = compute_roughness_energy(current_mesh)
 
-    st.markdown("**Roughness (smoothness) energy**")
-    st.caption(
-        "Roughness energy is the average distance from each vertex to the average "
-        "of its neighbors. Lower usually means smoother geometry."
-    )
+    st.markdown(f"**{ROUGHNESS_LABEL}**")
+    st.caption(ROUGHNESS_CAPTION)
     if original_roughness["mean"] is None and current_roughness["mean"] is None:
-        st.caption("Roughness energy is N/A: no vertex adjacency is available.")
+        st.caption("Roughness is N/A: no vertex adjacency is available.")
         return
 
     roughness_rows = [
         {
-            "Metric": "Roughness energy (mean)",
+            "Metric": "Mean neighbor distance",
             "Original": _format_value(original_roughness["mean"]),
             "Current": _format_value(current_roughness["mean"]),
             "Change": _format_percent(
@@ -783,7 +575,7 @@ def _render_roughness_metrics(original_mesh: MeshData, current_mesh: MeshData) -
             ),
         },
         {
-            "Metric": "Max roughness",
+            "Metric": "Max neighbor distance",
             "Original": _format_value(original_roughness["max"]),
             "Current": _format_value(current_roughness["max"]),
             "Change": _format_percent(
@@ -791,7 +583,7 @@ def _render_roughness_metrics(original_mesh: MeshData, current_mesh: MeshData) -
             ),
         },
         {
-            "Metric": "RMS roughness",
+            "Metric": "RMS neighbor distance",
             "Original": _format_value(original_roughness["rms"]),
             "Current": _format_value(current_roughness["rms"]),
             "Change": _format_percent(
@@ -801,8 +593,9 @@ def _render_roughness_metrics(original_mesh: MeshData, current_mesh: MeshData) -
     ]
     st.table(roughness_rows)
     st.caption(
-        "A method can reduce roughness while also shrinking the mesh. Compare this "
-        "table with the bounding-box and surface-area changes above."
+        "A method can lower this metric while also shrinking the mesh (collapse "
+        "is not good smoothing). Always compare with the bounding-box and "
+        "surface-area changes above."
     )
 
 
@@ -930,18 +723,18 @@ def _render_lecture_concept_cards() -> None:
         (
             "Neighbor-Average Smoothing",
             [
-                "Pointy vertices move toward their neighboring vertices.",
-                "Each step uses the average neighbor position.",
-                "The lambda slider controls how far vertices move each step.",
-                "More iterations make the surface smoother.",
+                "Each step moves every vertex toward the average of its one-ring neighbors.",
+                "All vertices update simultaneously from the old positions (synchronous update).",
+                "The lambda slider controls the fraction of the move (0 = none, 1 = all the way).",
+                "More iterations relax the surface further, and on closed shapes usually shrink it too.",
             ],
         ),
         (
             "Shrinkage",
             [
-                "Repeated averaging often pulls vertices inward.",
+                "Repeated averaging often pulls vertices inward on closed shapes.",
                 "Sharp details relax, but the overall shape can get smaller.",
-                "Watch this by applying many iterations to the cube or sphere.",
+                "The roughness metric also falls when the whole mesh shrinks, so read it with the size metrics.",
             ],
         ),
         (
@@ -949,8 +742,8 @@ def _render_lecture_concept_cards() -> None:
             [
                 "A boundary edge belongs to only one face.",
                 "Boundary vertices sit on the open border of a mesh.",
-                "Preserving them can keep open meshes from collapsing at the border.",
-                "Try this on the plane/grid.",
+                "Preserving them pins the border in place; the interior can still move or collapse.",
+                "Try this on the plane/grid with the Boundary preservation preset.",
             ],
         ),
     ]
@@ -961,17 +754,6 @@ def _render_lecture_concept_cards() -> None:
         with column:
             with st.expander(title, expanded=index == 0):
                 st.markdown("\n".join(f"- {bullet}" for bullet in bullets))
-
-
-def _render_observation_notes() -> None:
-    """Render short notes connecting controls to visible outcomes."""
-    st.markdown(
-        """
-        Use topology modes to separate vertices, edges, and faces. Use normal
-        overlays to read surface orientation. Then apply neighbor-average
-        smoothing and watch how the mesh relaxes, shrinks, or keeps its boundary.
-        """
-    )
 
 
 def _bullets(items: list[str]) -> str:
@@ -1067,6 +849,11 @@ def _mesh_source_key(prefix: str, name: str, file_bytes: bytes | None = None) ->
     return f"{prefix}:{name}:{len(file_bytes)}:{digest}"
 
 
+def _bump_working_version() -> None:
+    """Advance the working-mesh version counter used for staleness checks."""
+    st.session_state[WORKING_VERSION_KEY] = int(st.session_state.get(WORKING_VERSION_KEY, 0)) + 1
+
+
 def _sync_working_mesh(base_mesh: MeshData, source_key: str) -> None:
     """Reset original/working meshes whenever the selected source changes."""
     if st.session_state.get(MESH_SOURCE_KEY) == source_key:
@@ -1074,9 +861,12 @@ def _sync_working_mesh(base_mesh: MeshData, source_key: str) -> None:
         st.session_state.setdefault(NOISE_APPLIED_KEY, False)
         st.session_state.setdefault(NOISE_INFO_KEY, None)
         st.session_state.setdefault(PREVIEW_MESH_KEY, None)
-        st.session_state.setdefault(PREVIEW_NOTE_KEY, "")
+        st.session_state.setdefault(PREVIEW_NOISY_STAGE_KEY, None)
         st.session_state.setdefault(INSPECT_VERTEX_KEY, 0)
         return
+
+    from_preset = bool(st.session_state.pop(PRESET_SOURCE_SWITCH_KEY, False))
+    first_load = st.session_state.get(MESH_SOURCE_KEY) is None
 
     st.session_state[MESH_SOURCE_KEY] = source_key
     st.session_state[ORIGINAL_MESH_KEY] = clone_mesh(base_mesh)
@@ -1086,13 +876,28 @@ def _sync_working_mesh(base_mesh: MeshData, source_key: str) -> None:
     st.session_state[LOCAL_CENTER_KEY] = _nearest_mesh_center_vertex(base_mesh)
     st.session_state[LOCAL_RADIUS_KEY] = 2
     st.session_state[PREVIEW_MESH_KEY] = None
-    st.session_state[PREVIEW_NOTE_KEY] = ""
+    st.session_state[PREVIEW_NOISY_STAGE_KEY] = None
     st.session_state[NOISE_APPLIED_KEY] = False
     st.session_state[NOISE_INFO_KEY] = None
     st.session_state[INSPECT_VERTEX_KEY] = 0
     st.session_state.pop("method_comparison_rows", None)
-    st.session_state.pop("method_comparison_verts", None)
     st.session_state.pop("method_comparison_input_mesh", None)
+    st.session_state.pop("method_comparison_input_label", None)
+    _bump_working_version()
+
+    # A manual source switch starts the new mesh in a neutral experiment state
+    # so stale noise/smoothing settings cannot silently transform it. Presets
+    # intentionally carry their own control values, so they skip this.
+    if not from_preset and not first_load:
+        st.session_state[NOISE_ENABLED_KEY] = False
+        st.session_state[SMOOTHING_ITERATIONS_KEY] = 0
+        st.session_state[DEMO_MODIFIER_KEY] = DEMO_NONE
+        st.session_state[PRESET_MESSAGE_KEY] = ""
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "New mesh source loaded. Noise and smoothing controls were reset to "
+            "neutral so the first view is the unmodified mesh.",
+        )
 
 
 def _working_mesh() -> MeshData:
@@ -1107,35 +912,6 @@ def _nearest_mesh_center_vertex(mesh: MeshData) -> int:
     bbox_center = (mesh.vertices.min(axis=0) + mesh.vertices.max(axis=0)) / 2.0
     distances = np.linalg.norm(mesh.vertices - bbox_center, axis=1)
     return int(np.argmin(distances))
-
-
-def _render_noise_experiment_notes() -> None:
-    """Explain the noisy-mesh experiment and show current noise status."""
-    st.subheader("Noisy Mesh Experiment")
-    st.markdown(
-        """
-        Real scanned or hand-built meshes often contain small geometric errors and
-        surface roughness. This experiment lets you add controlled noise so you can
-        see **why smoothing is useful**:
-
-        - Noise simulates small geometric errors or roughness on the surface.
-        - Smoothing attempts to reduce this roughness.
-        - The clean original mesh is preserved, so you can always compare
-          clean -> noisy -> smoothed.
-
-        Use the sidebar **Noisy mesh experiment** controls to add noise along
-        vertex normals (or as random 3D displacement), then apply a smoothing
-        method and watch the roughness energy drop.
-        """
-    )
-    noise_info = st.session_state.get(NOISE_INFO_KEY)
-    if st.session_state.get(NOISE_APPLIED_KEY) and noise_info:
-        st.info(
-            f"Noise applied to the working mesh: mode = {noise_info['mode']}, "
-            f"strength = {noise_info['strength']:.2f}, seed = {noise_info['seed']}. "
-            "The clean original is still available in the comparison and via "
-            "'Reset to clean original'."
-        )
 
 
 def _run_method_comparison(
@@ -1216,21 +992,67 @@ def _run_method_comparison(
     return rows
 
 
-def _render_method_comparison_lab(mesh: MeshData) -> None:
-    """Render the Phase 6 method comparison lab."""
+def _comparison_input_candidates(working_mesh: MeshData) -> dict[str, MeshData]:
+    """Return the named input meshes the comparison can start from."""
+    candidates: dict[str, MeshData] = {
+        COMPARISON_INPUT_WORKING: working_mesh,
+        COMPARISON_INPUT_ORIGINAL: st.session_state[ORIGINAL_MESH_KEY],
+    }
+    noisy_stage = st.session_state.get(PREVIEW_NOISY_STAGE_KEY)
+    if isinstance(noisy_stage, MeshData) and noisy_stage.valid:
+        candidates[COMPARISON_INPUT_NOISY] = noisy_stage
+    preview = st.session_state.get(PREVIEW_MESH_KEY)
+    if (
+        isinstance(preview, MeshData)
+        and preview.valid
+        and not _meshes_have_same_vertices(preview, working_mesh)
+    ):
+        candidates[COMPARISON_INPUT_PREVIEW] = preview
+    return candidates
+
+
+def _render_method_comparison_lab(working_mesh: MeshData) -> None:
+    """Render the method comparison lab with an explicit, named input baseline."""
     st.subheader("Smoothing Method Comparison")
     st.markdown(
         """
-        Run every available smoothing method on the **same** starting mesh (a copy
-        of the current working mesh) and compare the results side by side.
-
-        - The same noisy mesh can be smoothed with different methods.
-        - Good smoothing is a tradeoff between reducing roughness and preserving
-          shape.
-        - Lower roughness is not always better if the mesh shrinks too much.
+        Run every available smoothing method on the **same** starting mesh and
+        compare the results side by side. Pick the input baseline explicitly, so
+        you always know what the methods started from.
 
         This comparison does **not** change your current working mesh.
         """
+    )
+
+    candidates = _comparison_input_candidates(working_mesh)
+    options = list(candidates.keys())
+    current_choice = st.session_state.get(COMPARISON_INPUT_KEY)
+    if current_choice not in options:
+        current_choice = options[0]
+        st.session_state[COMPARISON_INPUT_KEY] = current_choice
+    # Pass index= explicitly: this radio is only mounted once the user
+    # navigates to this section (lazy rendering), so on its first-ever mount
+    # in the browser it may carry a session_state value set by an earlier
+    # preset click. Relying on key= alone to seed the visual selection is not
+    # reliable for a widget mounted for the first time with a pre-set value;
+    # index= makes the rendered selection match the value deterministically.
+    input_label = st.radio(
+        "Comparison input",
+        options,
+        index=options.index(current_choice),
+        key=COMPARISON_INPUT_KEY,
+        horizontal=True,
+        help=(
+            "'Noisy preview stage' appears when the Playground preview currently "
+            "includes noise: it is the noisy mesh before smoothing, which is the "
+            "right input for a denoising comparison."
+        ),
+    )
+    selected_input = candidates[input_label]
+    input_roughness = compute_roughness_energy(selected_input)["mean"]
+    st.caption(
+        f"Selected input: **{input_label}** — {selected_input.vertex_count} vertices, "
+        f"{ROUGHNESS_LABEL.lower()} {_format_value(input_roughness)}."
     )
 
     columns = st.columns(4)
@@ -1238,12 +1060,20 @@ def _render_method_comparison_lab(mesh: MeshData) -> None:
     comp_lambda = columns[1].slider("Comparison lambda", 0.0, 1.0, 0.5, 0.05, key="comp_lambda")
     comp_mu = columns[2].slider("Comparison Taubin mu", -0.95, -0.05, TAUBIN_DEFAULT_MU, 0.01, key="comp_mu")
     comp_boundary = columns[3].checkbox("Preserve boundary", value=True, key="comp_boundary")
+    comp_stability = taubin_stability(comp_lambda, comp_mu)
+    if comp_lambda > 0 and not comp_stability["stable"]:
+        st.warning(
+            f"The Taubin pair lambda={comp_lambda:.2f}, mu={comp_mu:.2f} amplifies some "
+            f"frequencies (max gain {comp_stability['max_gain']:.3f} per iteration), so its "
+            "row may expand instead of smoothing. Stable pairs use lambda < |mu|, "
+            "for example lambda=0.5, mu=-0.53."
+        )
 
-    if st.button("Run comparison from current mesh"):
-        if not mesh.valid:
-            st.error("The current mesh is not valid; comparison is unavailable.")
+    if st.button("Run comparison from the selected input"):
+        if not selected_input.valid:
+            st.error("The selected input mesh is not valid; comparison is unavailable.")
             return
-        comparison_input = clone_mesh(mesh)
+        comparison_input = clone_mesh(selected_input)
         st.session_state["method_comparison_rows"] = _run_method_comparison(
             comparison_input,
             iterations=comp_iterations,
@@ -1252,23 +1082,38 @@ def _render_method_comparison_lab(mesh: MeshData) -> None:
             preserve_boundary=comp_boundary,
         )
         st.session_state["method_comparison_input_mesh"] = comparison_input
-        st.session_state["method_comparison_verts"] = mesh.vertex_count
+        st.session_state["method_comparison_input_label"] = input_label
 
     rows = st.session_state.get("method_comparison_rows")
     if not rows:
-        st.info("Press 'Run comparison from current mesh' to build the comparison table.")
+        st.info("Press 'Run comparison from the selected input' to build the comparison table.")
         return
 
     comparison_input = st.session_state.get("method_comparison_input_mesh")
+    stored_label = str(st.session_state.get("method_comparison_input_label", COMPARISON_INPUT_WORKING))
+    stored_candidate = candidates.get(stored_label)
     if comparison_input is not None:
+        if stored_candidate is None or not _meshes_have_same_vertices(comparison_input, stored_candidate):
+            st.warning(
+                f"These stored results describe an earlier snapshot of '{stored_label}'. "
+                "The mesh has changed since the comparison ran — re-run it to compare "
+                "the current state."
+            )
+        stored_roughness = compute_roughness_energy(comparison_input)["mean"]
+        st.caption(
+            f"Results below start from the stored snapshot of **{stored_label}** "
+            f"({ROUGHNESS_LABEL.lower()} {_format_value(stored_roughness)})."
+        )
         _render_method_comparison_visuals(comparison_input, rows)
 
     st.table([_format_comparison_row(row) for row in rows])
-    _render_comparison_ranking(rows)
+    _render_comparison_observations(rows)
     st.caption(
         "Displacement, bounding-box, area, and volume changes are measured "
-        "relative to the comparison input mesh. Volume change is N/A for open "
-        "or non-watertight meshes."
+        "relative to the stored comparison input. Volume change is N/A unless "
+        "the mesh is closed with consistent winding. Note: one Taubin iteration "
+        "performs two Laplacian passes, so equal iteration counts are the same "
+        "input, not equal work."
     )
 
 
@@ -1321,12 +1166,12 @@ def _format_comparison_row(row: dict[str, object]) -> dict[str, object]:
         "Rough before": _format_value(row["Roughness before"]),
         "Rough after": _format_value(row["Roughness after"]),
         "Rough reduction": _format_percent(row["Roughness reduction (%)"]),
-        "Topology changed?": row["Topology changed?"],
+        "Topology counts changed?": row["Topology changed?"],
     }
 
 
-def _render_comparison_ranking(rows: list[dict[str, object]]) -> None:
-    """Render short ranking notes for the comparison table."""
+def _render_comparison_observations(rows: list[dict[str, object]]) -> None:
+    """Render literal, metric-named observations instead of winner rankings."""
     supported = [row for row in rows if row["Status"] == "ok"]
     unsupported = [row for row in rows if row["Status"] != "ok"]
     notes: list[str] = []
@@ -1335,31 +1180,57 @@ def _render_comparison_ranking(rows: list[dict[str, object]]) -> None:
         value = row["BBox change (%)"]
         return abs(float(value)) if value is not None else float("inf")
 
-    def _reduction(row: dict[str, object]) -> float:
-        value = row["Roughness reduction (%)"]
-        return float(value) if value is not None else float("-inf")
-
     if supported:
-        least_shrink = min(supported, key=_abs_bbox)
-        most_smooth = max(supported, key=_reduction)
-        notes.append(f"**Least shrinkage (bounding box):** {least_shrink['Method']}")
-        notes.append(f"**Largest roughness reduction:** {most_smooth['Method']}")
+        sizes = [row for row in supported if row["BBox change (%)"] is not None]
+        if sizes:
+            smallest = min(sizes, key=_abs_bbox)
+            notes.append(
+                f"**Smallest absolute AABB-diagonal change:** {smallest['Method']} "
+                f"({_format_percent(smallest['BBox change (%)'])}). Note: a large "
+                "*positive* change means expansion, which is not shape preservation."
+            )
+        reducers = [
+            row
+            for row in supported
+            if row["Roughness reduction (%)"] is not None and float(row["Roughness reduction (%)"]) > 0.0
+        ]
+        if reducers:
+            reducers.sort(key=lambda row: float(row["Roughness reduction (%)"]), reverse=True)
+            listing = ", ".join(
+                f"{row['Method']} ({_format_percent(row['Roughness reduction (%)'])})"
+                for row in reducers
+            )
+            notes.append(f"**Methods that reduced roughness on this input:** {listing}.")
+        else:
+            notes.append(
+                "**No method reduced roughness on this input with these settings.** "
+                "Try different iterations/lambda before drawing conclusions."
+            )
+        notes.append(
+            "These observations describe this input and these settings only; they "
+            "are not general method rankings."
+        )
     for row in unsupported:
-        notes.append(f"**Unsupported for this mesh:** {row['Method']}")
+        notes.append(f"**Unsupported for this mesh:** {row['Method']} — {row['Notes']}")
 
     if notes:
         st.markdown("\n".join(f"- {note}" for note in notes))
 
 
 def _render_step_inspector(mesh: MeshData) -> None:
-    """Render the Phase 7 one-step smoothing computation inspector."""
+    """Render the one-step smoothing computation inspector."""
     st.subheader("Smoothing Step Inspector")
     st.markdown(
         """
-        Inspect exactly what happens to **one vertex** during a single smoothing
-        step. This makes the smoothing formula visible: each vertex moves toward
-        the (weighted) average of its neighbors.
+        Inspect what happens to **one vertex** during a single smoothing step,
+        including the boundary constraint the smoother actually applies. Each
+        movable vertex moves toward the (weighted) average of its neighbors.
         """
+    )
+    st.caption(
+        "The inspector shows one Uniform or Cotangent step with synchronous "
+        "updates (every vertex reads its neighbors' OLD positions). Taubin's "
+        "second negative pass and local soft weights are not shown here."
     )
     if not mesh.valid or mesh.vertex_count == 0:
         st.info("The current mesh has no vertices to inspect.")
@@ -1389,20 +1260,51 @@ def _render_step_inspector(mesh: MeshData) -> None:
         st.session_state["inspect_method"] = inspect_methods[0]
     inspect_method = columns[1].selectbox("Inspection method", inspect_methods, key="inspect_method")
     inspect_lambda = st.slider("Inspection lambda / strength", 0.0, 1.0, 0.5, 0.05, key="inspect_lambda")
+    st.session_state.setdefault(
+        INSPECT_BOUNDARY_KEY, bool(st.session_state.get(PRESERVE_BOUNDARY_KEY, True))
+    )
+    inspect_boundary = st.checkbox(
+        "Preserve boundary vertices (match the smoothing setting)",
+        key=INSPECT_BOUNDARY_KEY,
+        help=(
+            "When on, boundary vertices are pinned exactly as the smoothing "
+            "algorithms pin them, so the prediction matches what smoothing "
+            "actually does."
+        ),
+    )
 
     if inspect_method == "Cotangent weights":
-        _render_cotangent_inspection(mesh, vertex_index, inspect_lambda)
+        _render_cotangent_inspection(mesh, vertex_index, inspect_lambda, inspect_boundary)
     else:
-        _render_uniform_inspection(mesh, vertex_index, inspect_lambda)
+        _render_uniform_inspection(mesh, vertex_index, inspect_lambda, inspect_boundary)
 
 
-def _render_uniform_inspection(mesh: MeshData, vertex_index: int, lam: float) -> None:
+def _render_pinned_banner(info: dict[str, object]) -> None:
+    """Explain the boundary status of the inspected vertex."""
+    if info.get("pinned"):
+        st.warning(
+            f"Vertex {info['vertex_index']} is a **boundary vertex** and boundary "
+            "preservation is ON, so smoothing pins it: **predicted movement is "
+            "zero** and the predicted position equals the current position. The "
+            "unconstrained target below is shown for reference only."
+        )
+    elif info.get("is_boundary_vertex"):
+        st.info(
+            f"Vertex {info['vertex_index']} is a boundary vertex, but boundary "
+            "preservation is OFF here, so it moves like any other vertex."
+        )
+
+
+def _render_uniform_inspection(
+    mesh: MeshData, vertex_index: int, lam: float, preserve_boundary: bool
+) -> None:
     """Render the uniform one-step computation for a single vertex."""
-    info = inspect_uniform_step(mesh, vertex_index, lam=lam)
+    info = inspect_uniform_step(mesh, vertex_index, lam=lam, preserve_boundary=preserve_boundary)
     st.markdown(
         f"**Vertex {info['vertex_index']}** — valence (neighbor count): "
         f"**{info['valence']}**"
     )
+    _render_pinned_banner(info)
     _render_step_inspector_visual(
         mesh,
         int(info["vertex_index"]),
@@ -1424,30 +1326,44 @@ def _render_uniform_inspection(mesh: MeshData, vertex_index: int, lam: float) ->
     ]
     st.table(neighbor_rows)
 
-    st.table(
-        [
-            {"Quantity": "Neighbor average", "Value": _format_vector(info["neighbor_average"])},
-            {"Quantity": "Displacement (avg - current)", "Value": _format_vector(info["displacement"])},
-            {"Quantity": "Lambda", "Value": _format_value(info["lambda"], digits=2)},
+    quantity_rows = [
+        {"Quantity": "Neighbor average", "Value": _format_vector(info["neighbor_average"])},
+        {"Quantity": "Displacement (avg - current)", "Value": _format_vector(info["displacement"])},
+        {"Quantity": "Lambda", "Value": _format_value(info["lambda"], digits=2)},
+    ]
+    if info.get("pinned"):
+        quantity_rows.append(
             {
-                "Quantity": "Predicted new position (one step)",
-                "Value": _format_vector(info["predicted_position"]),
-            },
-        ]
+                "Quantity": "Unconstrained target (reference only)",
+                "Value": _format_vector(info.get("unconstrained_position")),
+            }
+        )
+    quantity_rows.append(
+        {
+            "Quantity": "Predicted new position (one step)",
+            "Value": _format_vector(info["predicted_position"]),
+        }
     )
-    st.caption(
-        "Predicted position = current + lambda x (neighbor average - current)."
-    )
+    st.table(quantity_rows)
+    if info.get("pinned"):
+        st.caption("Pinned boundary vertex: predicted position = current position.")
+    else:
+        st.caption("Predicted position = current + lambda x (neighbor average - current).")
 
 
-def _render_cotangent_inspection(mesh: MeshData, vertex_index: int, strength: float) -> None:
+def _render_cotangent_inspection(
+    mesh: MeshData, vertex_index: int, strength: float, preserve_boundary: bool
+) -> None:
     """Render the cotangent-weighted one-step computation for a single vertex."""
-    info = inspect_cotangent_step(mesh, vertex_index, strength=strength)
+    info = inspect_cotangent_step(
+        mesh, vertex_index, strength=strength, preserve_boundary=preserve_boundary
+    )
     if not info.get("supported"):
         st.warning(info.get("note", "Cotangent weights are unavailable for this mesh."))
         return
 
     st.markdown(f"**Vertex {info['vertex_index']}** cotangent-weighted neighborhood")
+    _render_pinned_banner(info)
     _render_step_inspector_visual(
         mesh,
         int(info["vertex_index"]),
@@ -1472,22 +1388,31 @@ def _render_cotangent_inspection(mesh: MeshData, vertex_index: int, strength: fl
         )
     ]
     st.table(weight_rows)
-    st.table(
-        [
-            {"Quantity": "Sum of weights", "Value": _format_value(info["weight_sum"], digits=4)},
-            {"Quantity": "Weighted target", "Value": _format_vector(info["weighted_target"])},
-            {"Quantity": "Strength", "Value": _format_value(info["strength"], digits=2)},
+    quantity_rows = [
+        {"Quantity": "Sum of weights", "Value": _format_value(info["weight_sum"], digits=4)},
+        {"Quantity": "Weighted target", "Value": _format_vector(info["weighted_target"])},
+        {"Quantity": "Strength", "Value": _format_value(info["strength"], digits=2)},
+    ]
+    if info.get("pinned"):
+        quantity_rows.append(
             {
-                "Quantity": "Predicted new position (one step)",
-                "Value": _format_vector(info["predicted_position"]),
-            },
-        ]
+                "Quantity": "Unconstrained target (reference only)",
+                "Value": _format_vector(info.get("unconstrained_position")),
+            }
+        )
+    quantity_rows.append(
+        {
+            "Quantity": "Predicted new position (one step)",
+            "Value": _format_vector(info["predicted_position"]),
+        }
     )
+    st.table(quantity_rows)
     if info.get("note"):
         st.caption(info["note"])
     st.caption(
-        "Cotangent smoothing weights neighbors using triangle geometry, so the "
-        "target is a weighted average rather than a plain average."
+        "Cotangent smoothing weights neighbors using the starting triangle "
+        "geometry (weights are computed once and reused across iterations), so "
+        "the target is a weighted average rather than a plain average."
     )
 
 
@@ -1526,19 +1451,44 @@ def _format_vector(vector: object) -> str:
     return f"({array[0]:.4f}, {array[1]:.4f}, {array[2]:.4f})"
 
 
-def _render_learning_summary(
-    mesh: MeshData,
-    smoothing_mode: str,
-    smoothing_method: str,
-    smoothing_iterations: int,
-    smoothing_strength: float,
-    preserve_boundary: bool,
-) -> None:
-    """Render the Phase 9 learning summary and Markdown download."""
+def _last_committed_action_rows(history: list[dict[str, object]]) -> list[dict[str, str]]:
+    """Build the settings table from the last committed history action."""
+    if not history:
+        return [
+            {
+                "Setting": "Last committed action",
+                "Value": "None yet - commit a preview or apply an action first",
+            }
+        ]
+    last = history[-1]
+    rows = [
+        {"Setting": "Last committed action", "Value": str(last.get("Action", "Smoothing"))},
+        {"Setting": "Method", "Value": str(last.get("Method", "N/A"))},
+        {"Setting": "Mode", "Value": str(last.get("Mode", "Global"))},
+        {"Setting": "Lambda", "Value": _format_value(last.get("Lambda"), digits=2)},
+        {"Setting": "Taubin mu", "Value": _format_value(last.get("Mu"), digits=2)},
+        {"Setting": "Preserve boundary", "Value": str(last.get("Preserve boundary"))},
+        {"Setting": "Total committed iterations", "Value": str(last.get("Total iterations"))},
+    ]
+    if last.get("Center vertex") is not None:
+        rows.append({"Setting": "Local center vertex", "Value": str(last.get("Center vertex"))})
+        rows.append({"Setting": "Local radius", "Value": str(last.get("Soft radius"))})
+        rows.append({"Setting": "Local falloff", "Value": str(last.get("Falloff") or "N/A")})
+    return rows
+
+
+def _render_learning_summary(mesh: MeshData) -> None:
+    """Render the learning summary and Markdown download from committed state.
+
+    Every value comes from the committed working mesh and the committed action
+    history. Current uncommitted widget positions are deliberately excluded so a
+    downloaded report can never attribute settings to geometry they did not
+    produce.
+    """
     st.subheader("Learning Summary")
     st.markdown(
-        "A snapshot of your current experiment. Use it to write up what you "
-        "observed about smoothing, roughness, and shrinkage."
+        "A snapshot of the **committed** experiment (working mesh + committed "
+        "action history). Uncommitted preview controls are not included."
     )
 
     original_mesh = st.session_state[ORIGINAL_MESH_KEY]
@@ -1547,20 +1497,17 @@ def _render_learning_summary(
     current = metrics["current"]
     roughness_current = compute_roughness_energy(mesh)["mean"]
     roughness_original = compute_roughness_energy(original_mesh)["mean"]
-    noise_info = st.session_state.get(NOISE_INFO_KEY)
+    history = list(st.session_state.get(SMOOTHING_HISTORY_KEY, []))
 
     settings_rows = [
         {"Setting": "Mesh", "Value": mesh.name},
         {"Setting": "Summary state", "Value": "Committed working mesh"},
         {"Setting": "Mesh type", "Value": mesh.mesh_type},
-        {"Setting": "Smoothing mode", "Value": smoothing_mode},
-        {"Setting": "Selected method", "Value": smoothing_method if smoothing_mode == "Global smoothing" else "Uniform (soft-weighted)"},
-        {"Setting": "Iterations per apply", "Value": str(smoothing_iterations)},
-        {"Setting": "Total iterations applied", "Value": str(total_iterations)},
-        {"Setting": "Lambda", "Value": _format_value(smoothing_strength, digits=2)},
-        {"Setting": "Preserve boundary", "Value": str(bool(preserve_boundary))},
-        {"Setting": "Noise applied", "Value": ("yes" if st.session_state.get(NOISE_APPLIED_KEY) else "no")},
-    ]
+        {
+            "Setting": "Noise committed",
+            "Value": ("yes" if st.session_state.get(NOISE_APPLIED_KEY) else "no"),
+        },
+    ] + _last_committed_action_rows(history)
     st.table(settings_rows)
 
     interpretation = _build_interpretation(metrics, roughness_original, roughness_current)
@@ -1568,21 +1515,15 @@ def _render_learning_summary(
 
     markdown = _build_summary_markdown(
         mesh,
-        original_mesh,
-        smoothing_mode,
-        smoothing_method,
-        smoothing_iterations,
         total_iterations,
-        smoothing_strength,
-        preserve_boundary,
         metrics,
         roughness_original,
         roughness_current,
         current,
-        noise_info,
+        history,
     )
     st.download_button(
-        "Download current experiment summary (.md)",
+        "Download committed experiment summary (.md)",
         data=markdown,
         file_name="mesh_smoothing_summary.md",
         mime="text/markdown",
@@ -1600,103 +1541,112 @@ def _build_interpretation(
     if reduction is None:
         parts.append("Roughness change is not available for this mesh.")
     elif reduction < 0:
-        parts.append(f"Roughness energy decreased by {abs(reduction):.1f}% versus the original (smoother).")
+        parts.append(
+            f"Mean neighbor distance (roughness) decreased by {abs(reduction):.1f}% versus the source original."
+        )
     elif reduction > 0:
-        parts.append(f"Roughness energy increased by {reduction:.1f}% versus the original (rougher).")
+        parts.append(
+            f"Mean neighbor distance (roughness) increased by {reduction:.1f}% versus the source original."
+        )
     else:
-        parts.append("Roughness energy is unchanged versus the original.")
+        parts.append("Mean neighbor distance (roughness) is unchanged versus the source original.")
 
     bbox = metrics["bounding_box_percent_change"]
     if bbox is not None:
         if bbox < -0.05:
-            parts.append(f"The bounding box shrank by {abs(bbox):.1f}% (shrinkage).")
+            parts.append(f"The AABB diagonal shrank by {abs(bbox):.1f}%.")
         elif bbox > 0.05:
-            parts.append(f"The bounding box grew by {bbox:.1f}%.")
+            parts.append(f"The AABB diagonal grew by {bbox:.1f}%.")
         else:
-            parts.append("The bounding box size is essentially unchanged.")
+            parts.append("The AABB diagonal is essentially unchanged.")
+    if reduction is not None and bbox is not None and reduction < 0 and bbox < -1.0:
+        parts.append(
+            "Part of the roughness drop comes from the size change itself, because "
+            "the metric has length units."
+        )
     return "**Interpretation:** " + " ".join(parts)
 
 
 def _build_summary_markdown(
     mesh: MeshData,
-    original_mesh: MeshData,
-    smoothing_mode: str,
-    smoothing_method: str,
-    iterations_per_apply: int,
     total_iterations: int,
-    smoothing_strength: float,
-    preserve_boundary: bool,
     metrics: dict[str, object],
     roughness_original: float | None,
     roughness_current: float | None,
     current: dict[str, object],
-    noise_info: dict[str, object] | None,
+    history: list[dict[str, object]],
 ) -> str:
-    """Build the downloadable Markdown learning summary (no local paths/secrets)."""
+    """Build the downloadable Markdown summary from committed state only."""
     lines = [
         "# Mesh Smoothing Learning Summary",
         "",
-        "## Experiment settings",
+        "All settings below come from the committed action history; geometry and",
+        "metrics come from the committed working mesh. Uncommitted preview",
+        "controls are not included.",
+        "",
+        "## Committed experiment settings",
         f"- Mesh: {mesh.name}",
         "- Summary state: committed working mesh",
         f"- Mesh type: {mesh.mesh_type}",
-        f"- Smoothing mode: {smoothing_mode}",
-        f"- Selected method: {smoothing_method}",
-        f"- Iterations per apply: {iterations_per_apply}",
-        f"- Total iterations applied: {total_iterations}",
-        f"- Lambda: {smoothing_strength:.2f}",
-        f"- Preserve boundary: {bool(preserve_boundary)}",
+        f"- Total committed smoothing iterations: {total_iterations}",
     ]
-    if noise_info:
-        lines.append(
-            f"- Noise: mode={noise_info['mode']}, strength={noise_info['strength']:.2f}, "
-            f"seed={noise_info['seed']}"
-        )
+    for row in _last_committed_action_rows(history):
+        lines.append(f"- {row['Setting']}: {row['Value']}")
     lines += [
         "",
-        "## Metrics (original vs current)",
+        "## Metrics (source original vs committed working mesh)",
         "| Metric | Original | Current | Change |",
         "| --- | --- | --- | --- |",
         f"| Vertices | {metrics['original']['vertex_count']} | {current['vertex_count']} | "
         f"{current['vertex_count'] - metrics['original']['vertex_count']} |",
         f"| Faces | {metrics['original']['face_count']} | {current['face_count']} | "
         f"{current['face_count'] - metrics['original']['face_count']} |",
-        f"| Bounding box diagonal | {_format_value(metrics['original']['bounding_box_diagonal'])} | "
+        f"| AABB (bounding box) diagonal | {_format_value(metrics['original']['bounding_box_diagonal'])} | "
         f"{_format_value(current['bounding_box_diagonal'])} | {_format_percent(metrics['bounding_box_percent_change'])} |",
         f"| Surface area | {_format_value(metrics['original']['surface_area'])} | "
         f"{_format_value(current['surface_area'])} | {_format_percent(metrics['surface_area_percent_change'])} |",
         f"| Volume | {_format_value(metrics['original']['volume'])} | "
         f"{_format_value(current['volume'])} | {_format_percent(metrics['volume_percent_change'])} |",
-        f"| Roughness energy | {_format_value(roughness_original)} | "
+        f"| Roughness (mean neighbor distance) | {_format_value(roughness_original)} | "
         f"{_format_value(roughness_current)} | {_format_percent(_percent_change(roughness_original, roughness_current))} |",
         "",
-        "## Smoothing history",
+        "## Committed action history",
     ]
-    history = st.session_state.get(SMOOTHING_HISTORY_KEY, [])
     if history:
-        lines.append("| Step | Action | Method | Iters | Lambda | Rough before | Rough after | BBox change |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Step | Action | Method | Total iters | Lambda | Mu | Rough before | Rough after | BBox change |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for row in history:
             lines.append(
                 f"| {row['Step']} | {row.get('Action', 'Smoothing')} | {row.get('Method', 'N/A')} | "
                 f"{row['Total iterations']} | {_format_value(row['Lambda'], digits=2)} | "
+                f"{_format_value(row.get('Mu'), digits=2)} | "
                 f"{_format_value(row.get('Roughness before'))} | {_format_value(row.get('Roughness after'))} | "
                 f"{_format_percent(row['Bounding box change (%)'])} |"
             )
     else:
-        lines.append("No smoothing actions recorded yet.")
+        lines.append("No committed actions recorded yet.")
     lines += [
         "",
         "## What the metrics mean",
-        "- **Roughness energy**: average distance from each vertex to the average of its neighbors. Lower is smoother.",
-        "- **Bounding box / surface area / volume change**: how much the mesh shrank or grew. Negative usually means shrinkage.",
-        "- **Displacement**: how far vertices moved from the original.",
+        "- **Roughness (mean neighbor distance)**: average distance from each vertex to the "
+        "average of its neighbors, in mesh length units. It is scale-dependent: uniformly "
+        "shrinking a mesh also lowers it, so read it together with the size metrics.",
+        "- **AABB diagonal / surface area / volume change**: how much the mesh shrank or grew "
+        "relative to the source original. The AABB diagonal is an axis-aligned size proxy, "
+        "not a full shape measure.",
+        "- **Displacement**: per-vertex distance moved from the source original (same vertex indices).",
+        "- History roughness before/after compares the mesh immediately before and after each "
+        "committed action; size metrics compare against the source original.",
         "",
         "## Limitations",
-        "- Uniform Laplacian smoothing shrinks meshes; Taubin reduces this.",
-        "- Cotangent smoothing supports triangle meshes only.",
-        "- Volume is available only for closed, watertight meshes.",
-        "- Local soft regions use graph distance, not Euclidean distance.",
+        "- Uniform Laplacian smoothing usually shrinks closed meshes.",
+        "- Taubin reduces shrinkage only for suitable lambda/mu pairs (lambda < |mu|); "
+        "unsuitable pairs can expand or destabilize the mesh.",
+        "- Cotangent smoothing supports triangle meshes only; this implementation freezes the "
+        "weights at the starting geometry and clamps negative weights (a teaching simplification).",
+        "- Volume is reported only for closed meshes with consistent outward winding.",
+        "- Local soft regions use graph distance (edge hops), not Euclidean distance; vertices "
+        "exactly at the radius have zero weight.",
     ]
     return "\n".join(lines)
 
@@ -1728,14 +1678,18 @@ def _ensure_ui_defaults() -> None:
         PLAYGROUND_COMPARISON_KEY: "Current only",
         PRESET_MESSAGE_KEY: "",
         RESET_REQUESTED_KEY: False,
+        PRESET_SOURCE_SWITCH_KEY: False,
         DEMO_MODIFIER_KEY: DEMO_NONE,
+        WORKING_VERSION_KEY: 0,
+        ACTIVE_SECTION_KEY: LEARNING_SECTIONS[0],
+        COMPARISON_INPUT_KEY: COMPARISON_INPUT_WORKING,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
 
 def _inject_layout_css() -> None:
-    """Add small layout rules for the visual playground."""
+    """Add layout rules: sticky viewer column and a responsive stacking breakpoint."""
     st.markdown(
         """
         <style>
@@ -1750,6 +1704,36 @@ def _inject_layout_css() -> None:
         .sticky-preview-marker {
             height: 0;
             overflow: hidden;
+        }
+        /* Keep button labels from breaking mid-word in narrow columns. */
+        div[data-testid="stButton"] button p {
+            word-break: normal;
+            overflow-wrap: normal;
+            hyphens: none;
+        }
+        /* Responsive breakpoint: stack the top-level playground rails instead
+           of squeezing three unusable columns into a narrow viewport. Nested
+           column pairs (preset buttons, metric strip) keep sharing a row. */
+        @media (max-width: 1100px) {
+            div[data-testid="stMain"] div[data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap;
+            }
+            div[data-testid="stMain"] div[data-testid="stHorizontalBlock"]
+                > div[data-testid="stColumn"] {
+                flex: 1 1 100% !important;
+                width: 100% !important;
+                min-width: 100% !important;
+            }
+            div[data-testid="stMain"] div[data-testid="stColumn"]
+                div[data-testid="stHorizontalBlock"]
+                > div[data-testid="stColumn"] {
+                flex: 1 1 40% !important;
+                width: auto !important;
+                min-width: 150px !important;
+            }
+            div[data-testid="stColumn"]:has(.sticky-preview-marker) {
+                position: static;
+            }
         }
         </style>
         """,
@@ -1795,20 +1779,61 @@ def _render_mesh_source_sidebar() -> tuple[MeshData, str]:
 
 
 def _render_viewer_sidebar(mesh: MeshData) -> dict[str, object]:
-    """Render viewer controls shared by the learning tabs."""
+    """Render viewer controls, disabling those the current view mode ignores.
+
+    Overlay uses a fixed rendering (current shaded + original wireframe), so
+    display mode and normal overlays do nothing there; Side-by-side and
+    Original-only honor the display mode but not the normal overlays. Instead
+    of silently ignoring those controls (the audited no-op behavior), they are
+    disabled with an explanation.
+    """
+    view_mode = str(st.session_state.get(PLAYGROUND_COMPARISON_KEY, "Current only"))
+    display_scoped = view_mode == "Overlay"
+    normals_scoped = view_mode != "Current only"
+
     st.header("Viewer")
-    display_mode = st.selectbox("Display mode", DISPLAY_MODES, key=DISPLAY_MODE_KEY)
+    display_mode = st.selectbox(
+        "Display mode",
+        DISPLAY_MODES,
+        key=DISPLAY_MODE_KEY,
+        disabled=display_scoped,
+    )
+    if display_scoped:
+        st.caption(
+            "Display mode is unavailable in Overlay: it always draws the current "
+            "mesh shaded with the original as a wireframe."
+        )
     background_label = st.selectbox("Background", ["Light", "Dark"], key=BACKGROUND_KEY)
     show_axes = st.checkbox("Show axes", key=SHOW_AXES_KEY)
 
     with st.expander("Normals", expanded=False):
-        show_face_normals = st.checkbox("Show face normals", key=SHOW_FACE_NORMALS_KEY)
-        show_vertex_normals = st.checkbox("Show vertex normals", key=SHOW_VERTEX_NORMALS_KEY)
-        normal_length = st.slider("Normal length", 0.0, 1.0, key=NORMAL_LENGTH_KEY, step=0.05)
+        if normals_scoped:
+            st.caption(
+                f"Normal overlays draw only in the 'Current only' Playground view "
+                f"(current view: {view_mode})."
+            )
+        show_face_normals = st.checkbox(
+            "Show face normals", key=SHOW_FACE_NORMALS_KEY, disabled=normals_scoped
+        )
+        show_vertex_normals = st.checkbox(
+            "Show vertex normals", key=SHOW_VERTEX_NORMALS_KEY, disabled=normals_scoped
+        )
+        normals_off = not (
+            st.session_state.get(SHOW_FACE_NORMALS_KEY) or st.session_state.get(SHOW_VERTEX_NORMALS_KEY)
+        )
+        normal_length = st.slider(
+            "Normal length",
+            0.0,
+            1.0,
+            key=NORMAL_LENGTH_KEY,
+            step=0.05,
+            disabled=normals_scoped or normals_off,
+        )
         vertex_normal_weighting = st.selectbox(
             "Vertex normal weighting",
             ["average", "area-weighted"],
             key=VERTEX_NORMAL_WEIGHTING_KEY,
+            disabled=normals_scoped or not st.session_state.get(SHOW_VERTEX_NORMALS_KEY),
             format_func=lambda value: (
                 "Average incident face normals"
                 if value == "average"
@@ -1853,8 +1878,12 @@ def _apply_preset(name: str) -> None:
             SMOOTHING_METHOD_KEY: UNIFORM_LAPLACIAN,
             SMOOTHING_ITERATIONS_KEY: 14,
             SMOOTHING_STRENGTH_KEY: 0.5,
-            PRESET_MESSAGE_KEY: "Preset loaded Low-poly sphere with repeated Uniform Laplacian smoothing so shrinkage is visible in the overlay and metric cards.",
+            PRESET_MESSAGE_KEY: "Preset loaded Low-poly sphere with repeated Uniform Laplacian smoothing. Look at the Overlay: the blue preview sits well inside the black original wireframe, and the AABB metric drops sharply.",
         },
+        # Taubin pair validated by tests/test_presets.py: lambda=0.5, mu=-0.53
+        # reduces the seed-42 noisy sphere's roughness by ~19% while changing
+        # the AABB diagonal by only a few percent. (The earlier lambda=0.35
+        # pair amplified mid frequencies and made the mesh rougher AND larger.)
         "Remove noise": {
             SAMPLE_MESH_KEY: "Low-poly sphere",
             NOISE_ENABLED_KEY: True,
@@ -1863,8 +1892,8 @@ def _apply_preset(name: str) -> None:
             SMOOTHING_MODE_KEY: "Global smoothing",
             SMOOTHING_METHOD_KEY: TAUBIN,
             SMOOTHING_ITERATIONS_KEY: 10,
-            SMOOTHING_STRENGTH_KEY: 0.35,
-            PRESET_MESSAGE_KEY: "Preset loaded a noisy Low-poly sphere with Taubin smoothing to show roughness reduction while limiting shrinkage.",
+            SMOOTHING_STRENGTH_KEY: TAUBIN_STABLE_LAMBDA,
+            PRESET_MESSAGE_KEY: "Preset loaded a noisy Low-poly sphere (seed 42) smoothed with a stable Taubin pair (lambda 0.5, mu -0.53). Read the clean -> noisy -> smoothed roughness line in the explanation panel: the smoothed stage is much less rough than the noisy stage while the size changes only a few percent.",
         },
         "Uniform vs Taubin": {
             SAMPLE_MESH_KEY: "Low-poly sphere",
@@ -1873,9 +1902,10 @@ def _apply_preset(name: str) -> None:
             NOISE_SEED_KEY: 42,
             SMOOTHING_MODE_KEY: "Global smoothing",
             SMOOTHING_METHOD_KEY: UNIFORM_LAPLACIAN,
-            SMOOTHING_ITERATIONS_KEY: 10,
+            SMOOTHING_ITERATIONS_KEY: 0,
             SMOOTHING_STRENGTH_KEY: 0.45,
-            PRESET_MESSAGE_KEY: "Preset loaded a noisy triangle mesh. Open Method Comparison to run Uniform, Taubin, and Cotangent from the same input.",
+            COMPARISON_INPUT_KEY: COMPARISON_INPUT_NOISY,
+            PRESET_MESSAGE_KEY: "Preset created a noisy sphere preview (seed 42). Open Method Comparison: the comparison input is already set to 'Noisy preview stage', so Uniform, Taubin, and Cotangent all start from this exact noisy mesh.",
         },
         "Boundary preservation": {
             SAMPLE_MESH_KEY: "Plane/grid",
@@ -1886,7 +1916,7 @@ def _apply_preset(name: str) -> None:
             SMOOTHING_STRENGTH_KEY: 0.7,
             PRESERVE_BOUNDARY_KEY: True,
             DEMO_MODIFIER_KEY: DEMO_GRID_BUMP,
-            PRESET_MESSAGE_KEY: "Preset loaded Plane/grid with a temporary raised bump. Toggle boundary preservation to see whether the open border moves.",
+            PRESET_MESSAGE_KEY: "Preset loaded Plane/grid with a temporary raised bump. Toggle 'Preserve boundary vertices' off and on and watch the outer border: pinned when on, sliding inward when off.",
         },
         "Local soft smoothing": {
             SAMPLE_MESH_KEY: "Plane/grid",
@@ -1896,11 +1926,11 @@ def _apply_preset(name: str) -> None:
             SMOOTHING_ITERATIONS_KEY: 10,
             SMOOTHING_STRENGTH_KEY: 0.65,
             LOCAL_CENTER_KEY: 12,
-            LOCAL_RADIUS_KEY: 2,
+            LOCAL_RADIUS_KEY: 3,
             FALLOFF_TYPE_KEY: "smoothstep",
             DEMO_MODIFIER_KEY: DEMO_GRID_BUMP,
             PLAYGROUND_COMPARISON_KEY: "Current only",
-            PRESET_MESSAGE_KEY: "Preset loaded Plane/grid with a raised bump and highlighted soft-selection region. Increase the radius to widen the local edit.",
+            PRESET_MESSAGE_KEY: "Preset loaded Plane/grid with a raised bump and a radius-3 soft selection (red = center, orange = affected region). Change the radius to grow the region; at radius 3+ the falloff curve also changes the middle-ring weights.",
         },
         "Inspect one vertex": {
             SAMPLE_MESH_KEY: "Low-poly sphere",
@@ -1911,13 +1941,14 @@ def _apply_preset(name: str) -> None:
             SMOOTHING_STRENGTH_KEY: 0.5,
             INSPECT_VERTEX_KEY: 0,
             PLAYGROUND_COMPARISON_KEY: "Current only",
-            PRESET_MESSAGE_KEY: "Preset loaded Low-poly sphere. Open Step Inspector to connect one visible vertex move to the smoothing formula.",
+            PRESET_MESSAGE_KEY: "Preset loaded Low-poly sphere with one smoothing iteration. Open Step Inspector to connect one visible vertex move to the smoothing formula.",
         },
     }
     values = preset_values.get(name, {})
     for key, value in {**common, **values}.items():
         st.session_state[key] = value
     st.session_state[RESET_REQUESTED_KEY] = True
+    st.session_state[PRESET_SOURCE_SWITCH_KEY] = True
 
 
 def _reset_experiment() -> None:
@@ -1929,13 +1960,36 @@ def _reset_experiment() -> None:
     st.session_state[SMOOTHING_STEPS_KEY] = 0
     st.session_state[SMOOTHING_HISTORY_KEY] = []
     st.session_state[PREVIEW_MESH_KEY] = None
-    st.session_state[PREVIEW_NOTE_KEY] = ""
+    st.session_state[PREVIEW_NOISY_STAGE_KEY] = None
     st.session_state[NOISE_APPLIED_KEY] = False
     st.session_state[NOISE_INFO_KEY] = None
     st.session_state[INSPECT_VERTEX_KEY] = 0
     st.session_state.pop("method_comparison_rows", None)
-    st.session_state.pop("method_comparison_verts", None)
     st.session_state.pop("method_comparison_input_mesh", None)
+    st.session_state.pop("method_comparison_input_label", None)
+    _bump_working_version()
+
+
+def _reset_experiment_and_controls() -> None:
+    """Reset button callback: restore state AND neutralize experiment widgets.
+
+    This runs as an ``on_click`` callback, which Streamlit executes before any
+    widget of the next run is instantiated, so writing widget-backed session
+    keys here is legal. Writing them inline after the button (the previous
+    implementation) raised ``StreamlitAPIException`` because the widgets had
+    already been created in the same run.
+    """
+    _reset_experiment()
+    st.session_state[NOISE_ENABLED_KEY] = False
+    st.session_state[SMOOTHING_ITERATIONS_KEY] = 0
+    st.session_state[DEMO_MODIFIER_KEY] = DEMO_NONE
+    st.session_state[PRESET_MESSAGE_KEY] = ""
+    st.session_state[PLAYGROUND_COMPARISON_KEY] = "Current only"
+    st.session_state[LIVE_PREVIEW_KEY] = True
+    st.session_state[FLASH_MESSAGE_KEY] = (
+        "success",
+        "Restored the clean original mesh and reset the experiment controls.",
+    )
 
 
 def _render_preset_buttons() -> None:
@@ -2020,7 +2074,22 @@ def _render_playground_controls(mesh: MeshData) -> dict[str, object]:
                 -0.05,
                 key=TAUBIN_MU_KEY,
                 step=0.01,
+                help=(
+                    "Stable pairs keep lambda < |mu| with a small positive "
+                    "pass-band 1/lambda + 1/mu. Recommended: lambda 0.5, mu -0.53."
+                ),
             )
+            stability = taubin_stability(float(smoothing_strength), float(taubin_mu))
+            if float(smoothing_strength) > 0.0 and not stability["stable"]:
+                iterations_hint = max(1, int(smoothing_iterations))
+                st.warning(
+                    f"Unstable Taubin pair: lambda={float(smoothing_strength):.2f}, "
+                    f"mu={float(taubin_mu):.2f} amplifies some frequencies by x"
+                    f"{stability['max_gain']:.3f} per iteration (about x"
+                    f"{stability['max_gain'] ** iterations_hint:.1f} after "
+                    f"{iterations_hint} iterations). Expect the mesh to expand or "
+                    "roughen instead of smoothing. Try lambda 0.5 with mu -0.53."
+                )
         elif smoothing_method == COTANGENT_LAPLACIAN and not is_triangle_mesh(mesh):
             st.warning(
                 "Cotangent smoothing supports triangle meshes only. Try Low-poly sphere or pyramid.obj."
@@ -2047,8 +2116,25 @@ def _render_playground_controls(mesh: MeshData) -> dict[str, object]:
                 1,
                 max_radius,
                 key=LOCAL_RADIUS_KEY,
+                help="1 graph step = crossing one edge from the center vertex.",
             )
-        falloff_type = st.selectbox("Falloff type", FALLOFF_TYPES, key=FALLOFF_TYPE_KEY)
+        falloff_locked = int(soft_radius) < 3
+        falloff_type = st.selectbox(
+            "Falloff type",
+            FALLOFF_TYPES,
+            key=FALLOFF_TYPE_KEY,
+            disabled=falloff_locked,
+            help=(
+                "How the smoothing weight fades from 1 at the center to 0 at the "
+                "radius ring."
+            ),
+        )
+        if falloff_locked:
+            st.caption(
+                "Falloff is locked at radius 1-2: with integer graph distances, "
+                "linear and smoothstep produce exactly the same weights there. "
+                "Use radius 3 or more to see the curves differ."
+            )
         _render_soft_selection_summary(
             mesh,
             center_vertex=center_vertex,
@@ -2127,7 +2213,14 @@ def _build_preview_mesh(
     working_mesh: MeshData,
     controls: dict[str, object],
 ) -> tuple[MeshData, dict[str, object]]:
-    """Compute the temporary preview mesh without mutating the working mesh."""
+    """Compute the temporary preview mesh without mutating the working mesh.
+
+    Every stage flag (``demo_applied``, ``noise_applied``, ``smoothing_applied``,
+    ``changed``) reflects an ACTUAL vertex change, verified by comparing the
+    geometry before and after the stage — never merely "the operation was
+    requested". The noisy intermediate stage is stored in session state so the
+    Method Comparison lab can use it as a named input baseline.
+    """
     info: dict[str, object] = {
         "supported": True,
         "note": "",
@@ -2135,69 +2228,95 @@ def _build_preview_mesh(
         "noise_applied": False,
         "smoothing_applied": False,
         "changed": False,
+        "stage_roughness": {},
+        "stage_bbox": {},
     }
     if not controls["live_preview"]:
+        st.session_state[PREVIEW_MESH_KEY] = None
+        st.session_state[PREVIEW_NOISY_STAGE_KEY] = None
         return working_mesh, info
 
     guard_note = _live_preview_guard(working_mesh, controls)
     if guard_note:
         info["supported"] = False
         info["note"] = guard_note
+        st.session_state[PREVIEW_MESH_KEY] = None
+        st.session_state[PREVIEW_NOISY_STAGE_KEY] = None
         return working_mesh, info
 
-    preview = clone_mesh(working_mesh)
-    preview, demo_applied = _apply_demo_modifier(preview, controls)
-    if demo_applied:
-        info["demo_applied"] = True
-        info["changed"] = True
+    def _stage_metrics(mesh: MeshData) -> tuple[float | None, float | None]:
+        roughness = compute_roughness_energy(mesh)["mean"]
+        vertices = mesh.vertices
+        if vertices.size == 0:
+            return roughness, None
+        diagonal = float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0)))
+        return roughness, diagonal
 
+    rough, bbox = _stage_metrics(working_mesh)
+    info["stage_roughness"]["working"] = rough
+    info["stage_bbox"]["working"] = bbox
+
+    preview = clone_mesh(working_mesh)
+    bumped, demo_requested = _apply_demo_modifier(preview, controls)
+    if demo_requested and not _meshes_have_same_vertices(preview, bumped):
+        preview = bumped
+        info["demo_applied"] = True
+
+    noisy_stage: MeshData | None = None
     if controls["noise_enabled"] and controls["noise_strength"] > 0.0:
-        preview = add_noise(
+        noised = add_noise(
             preview,
             strength=float(controls["noise_strength"]),
             seed=int(controls["noise_seed"]),
             mode=str(controls["noise_mode"]),
         )
-        info["noise_applied"] = True
-        info["changed"] = True
+        if not _meshes_have_same_vertices(preview, noised):
+            preview = noised
+            info["noise_applied"] = True
+            noisy_stage = clone_mesh(preview)
+            rough, bbox = _stage_metrics(preview)
+            info["stage_roughness"]["noisy"] = rough
+            info["stage_bbox"]["noisy"] = bbox
 
     iterations = int(controls["smoothing_iterations"])
-    if iterations <= 0:
-        st.session_state[PREVIEW_MESH_KEY] = preview
-        st.session_state[PREVIEW_NOTE_KEY] = str(info["note"])
-        return preview, info
-
-    if controls["smoothing_mode"] == "Local / soft smoothing":
-        preview = laplacian_smooth_local(
-            preview,
-            iterations=iterations,
-            strength=float(controls["smoothing_strength"]),
-            center_index=int(controls["center_vertex"] or 0),
-            radius=int(controls["soft_radius"] or 1),
-            falloff_type=str(controls["falloff_type"] or "linear"),
-            preserve_boundary=bool(controls["preserve_boundary"]),
-        )
-        info["smoothing_applied"] = True
-        info["changed"] = True
-    else:
-        result = apply_global_smoothing(
-            preview,
-            method=str(controls["smoothing_method"]),
-            iterations=iterations,
-            lam=float(controls["smoothing_strength"]),
-            mu=float(controls["taubin_mu"]),
-            preserve_boundary=bool(controls["preserve_boundary"]),
-        )
-        if result.supported:
-            preview = result.mesh
-            info["smoothing_applied"] = True
-            info["changed"] = True
+    if iterations > 0:
+        pre_smoothing = preview
+        if controls["smoothing_mode"] == "Local / soft smoothing":
+            smoothed = laplacian_smooth_local(
+                preview,
+                iterations=iterations,
+                strength=float(controls["smoothing_strength"]),
+                center_index=int(controls["center_vertex"] or 0),
+                radius=int(controls["soft_radius"] or 1),
+                falloff_type=str(controls["falloff_type"] or "linear"),
+                preserve_boundary=bool(controls["preserve_boundary"]),
+            )
         else:
-            info["supported"] = False
-            info["note"] = result.note
+            result = apply_global_smoothing(
+                preview,
+                method=str(controls["smoothing_method"]),
+                iterations=iterations,
+                lam=float(controls["smoothing_strength"]),
+                mu=float(controls["taubin_mu"]),
+                preserve_boundary=bool(controls["preserve_boundary"]),
+            )
+            if result.supported:
+                smoothed = result.mesh
+            else:
+                smoothed = pre_smoothing
+                info["supported"] = False
+                info["note"] = result.note
+        if info["supported"] and not _meshes_have_same_vertices(pre_smoothing, smoothed):
+            preview = smoothed
+            info["smoothing_applied"] = True
 
-    st.session_state[PREVIEW_MESH_KEY] = preview
-    st.session_state[PREVIEW_NOTE_KEY] = str(info["note"])
+    info["changed"] = not _meshes_have_same_vertices(working_mesh, preview)
+    rough, bbox = _stage_metrics(preview)
+    info["stage_roughness"]["preview"] = rough
+    info["stage_bbox"]["preview"] = bbox
+
+    st.session_state[PREVIEW_MESH_KEY] = preview if info["changed"] else None
+    st.session_state[PREVIEW_NOISY_STAGE_KEY] = noisy_stage
     return preview, info
 
 
@@ -2214,25 +2333,38 @@ def _commit_preview_mesh(
     controls: dict[str, object],
     preview_info: dict[str, object],
 ) -> None:
-    """Promote the preview mesh to the committed working mesh."""
+    """Commit-button callback: promote the preview to the working mesh.
+
+    Runs as an ``on_click`` callback so it may also clear the one-shot noise and
+    smoothing controls; without that clearing, the very next rerun would apply
+    the same operation again on top of the freshly committed mesh (the
+    double-preview bug).
+    """
     if not preview_info.get("supported", True):
-        st.warning(preview_info.get("note") or "Preview is not supported for this mesh.")
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "warning",
+            preview_info.get("note") or "Preview is not supported for this mesh.",
+        )
         return
-    if not preview_info.get("changed"):
-        st.info("No preview changes to commit.")
+    if not preview_info.get("changed") or _meshes_have_same_vertices(working_mesh, preview_mesh):
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "The preview geometry is identical to the working mesh; nothing was committed.",
+        )
         return
 
     roughness_before = compute_roughness_energy(working_mesh)["mean"]
     committed = clone_mesh(preview_mesh)
     st.session_state[WORKING_MESH_KEY] = committed
 
-    added_iterations = (
-        int(controls["smoothing_iterations"]) if preview_info.get("smoothing_applied") else 0
-    )
+    smoothing_moved = bool(preview_info.get("smoothing_applied"))
+    noise_moved = bool(preview_info.get("noise_applied"))
+    demo_applied = bool(preview_info.get("demo_applied"))
+    added_iterations = int(controls["smoothing_iterations"]) if smoothing_moved else 0
     st.session_state[SMOOTHING_STEPS_KEY] += added_iterations
     roughness_after = compute_roughness_energy(committed)["mean"]
 
-    if preview_info.get("noise_applied"):
+    if noise_moved:
         st.session_state[NOISE_APPLIED_KEY] = True
         st.session_state[NOISE_INFO_KEY] = {
             "strength": float(controls["noise_strength"]),
@@ -2240,31 +2372,66 @@ def _commit_preview_mesh(
             "mode": controls["noise_mode"],
         }
 
+    # Record what actually happened, not what the widgets happened to show.
     is_local = controls["smoothing_mode"] == "Local / soft smoothing"
+    committed_parts: list[str] = []
+    if demo_applied:
+        committed_parts.append("teaching bump")
+    if noise_moved:
+        committed_parts.append(f"noise ({controls['noise_mode']}, strength {float(controls['noise_strength']):.2f}, seed {int(controls['noise_seed'])})")
+    if smoothing_moved:
+        committed_parts.append(f"{_method_label(controls)} x{added_iterations}")
+    if smoothing_moved:
+        method_label = _method_label(controls)
+        recorded_lambda = float(controls["smoothing_strength"])
+    elif noise_moved:
+        method_label = f"Noise ({controls['noise_mode']})"
+        recorded_lambda = 0.0
+    else:
+        method_label = "Teaching bump"
+        recorded_lambda = 0.0
     _append_smoothing_history(
         st.session_state[ORIGINAL_MESH_KEY],
         committed,
         st.session_state[SMOOTHING_STEPS_KEY],
-        float(controls["smoothing_strength"]),
-        bool(controls["preserve_boundary"]),
-        smoothing_mode=("Local / soft" if is_local else "Global"),
-        method=_method_label(controls),
+        recorded_lambda,
+        bool(controls["preserve_boundary"]) if smoothing_moved else False,
+        smoothing_mode=("Local / soft" if (is_local and smoothing_moved) else ("Global" if smoothing_moved else "Noise/preview")),
+        method=method_label,
         mu=float(controls["taubin_mu"])
-        if (not is_local and controls["smoothing_method"] == TAUBIN)
+        if (smoothing_moved and not is_local and controls["smoothing_method"] == TAUBIN)
         else None,
         roughness_before=roughness_before,
         roughness_after=roughness_after,
-        center_vertex=int(controls["center_vertex"]) if is_local else None,
-        soft_radius=int(controls["soft_radius"]) if is_local else None,
-        falloff_type=str(controls["falloff_type"]) if is_local else None,
+        center_vertex=int(controls["center_vertex"]) if (is_local and smoothing_moved) else None,
+        soft_radius=int(controls["soft_radius"]) if (is_local and smoothing_moved) else None,
+        falloff_type=str(controls["falloff_type"]) if (is_local and smoothing_moved) else None,
         action="Commit preview",
     )
-    st.success("Committed preview as the current working mesh.")
-    st.rerun()
+    _bump_working_version()
+
+    # One-shot semantics: the committed operation must not immediately rebuild
+    # itself as the next preview (legal here because this is an on_click
+    # callback, executed before the widgets are instantiated).
+    st.session_state[NOISE_ENABLED_KEY] = False
+    st.session_state[SMOOTHING_ITERATIONS_KEY] = 0
+    st.session_state[DEMO_MODIFIER_KEY] = DEMO_NONE
+    st.session_state[FLASH_MESSAGE_KEY] = (
+        "success",
+        "Committed to the working mesh: " + "; ".join(committed_parts) + ". "
+        "Noise and iteration controls were reset to neutral so the viewer now "
+        "shows exactly the committed state.",
+    )
 
 
 def _add_noise_to_working(controls: dict[str, object]) -> None:
-    """Apply noise directly to the committed working mesh when live preview is off."""
+    """Manual-mode callback: apply noise directly to the working mesh."""
+    if not controls["noise_enabled"] or float(controls["noise_strength"]) <= 0.0:
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "Noise is disabled or its strength is 0, so no noise was applied.",
+        )
+        return
     source_mesh = _working_mesh()
     roughness_before = compute_roughness_energy(source_mesh)["mean"]
     noisy = add_noise(
@@ -2273,6 +2440,12 @@ def _add_noise_to_working(controls: dict[str, object]) -> None:
         seed=int(controls["noise_seed"]),
         mode=str(controls["noise_mode"]),
     )
+    if _meshes_have_same_vertices(source_mesh, noisy):
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "These noise settings did not move any vertex; nothing was recorded.",
+        )
+        return
     st.session_state[WORKING_MESH_KEY] = noisy
     roughness_after = compute_roughness_energy(noisy)["mean"]
     st.session_state[NOISE_APPLIED_KEY] = True
@@ -2293,21 +2466,26 @@ def _add_noise_to_working(controls: dict[str, object]) -> None:
         roughness_after=roughness_after,
         action="Add noise",
     )
-    st.success("Noise added to the current working mesh.")
-    st.rerun()
+    _bump_working_version()
+    st.session_state[FLASH_MESSAGE_KEY] = (
+        "success",
+        "Noise added to the current working mesh.",
+    )
 
 
 def _apply_smoothing_to_working(controls: dict[str, object]) -> None:
-    """Apply smoothing directly to the working mesh when live preview is off."""
+    """Manual-mode callback: apply smoothing directly to the working mesh."""
     iterations = int(controls["smoothing_iterations"])
     if iterations <= 0:
-        st.info("Set iterations above 0 to apply smoothing.")
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "Set iterations above 0 to apply smoothing.",
+        )
         return
 
     source_mesh = _working_mesh()
     roughness_before = compute_roughness_energy(source_mesh)["mean"]
     is_local = controls["smoothing_mode"] == "Local / soft smoothing"
-    applied = True
 
     if is_local:
         next_mesh = laplacian_smooth_local(
@@ -2328,13 +2506,20 @@ def _apply_smoothing_to_working(controls: dict[str, object]) -> None:
             mu=float(controls["taubin_mu"]),
             preserve_boundary=bool(controls["preserve_boundary"]),
         )
-        if result.supported:
-            next_mesh = result.mesh
-        else:
-            applied = False
-            st.warning(result.note or "This method is not supported for the current mesh.")
+        if not result.supported:
+            st.session_state[FLASH_MESSAGE_KEY] = (
+                "warning",
+                result.note or "This method is not supported for the current mesh.",
+            )
+            return
+        next_mesh = result.mesh
 
-    if not applied:
+    if _meshes_have_same_vertices(source_mesh, next_mesh):
+        st.session_state[FLASH_MESSAGE_KEY] = (
+            "info",
+            "These settings did not move any vertex (lambda 0, or the affected "
+            "region is fully pinned), so no smoothing was recorded.",
+        )
         return
 
     st.session_state[WORKING_MESH_KEY] = next_mesh
@@ -2357,8 +2542,11 @@ def _apply_smoothing_to_working(controls: dict[str, object]) -> None:
         soft_radius=int(controls["soft_radius"]) if is_local else None,
         falloff_type=str(controls["falloff_type"]) if is_local else None,
     )
-    st.success(f"Applied {iterations} smoothing iteration(s).")
-    st.rerun()
+    _bump_working_version()
+    st.session_state[FLASH_MESSAGE_KEY] = (
+        "success",
+        f"Applied {iterations} smoothing iteration(s).",
+    )
 
 
 def _render_commit_controls(
@@ -2372,29 +2560,56 @@ def _render_commit_controls(
     if controls["live_preview"]:
         if preview_info.get("note"):
             st.warning(str(preview_info["note"]))
-        if st.button(
+        commit_disabled = not bool(preview_info.get("changed")) or not bool(
+            preview_info.get("supported", True)
+        )
+        if commit_disabled and preview_info.get("supported", True):
+            st.caption("Commit is disabled because the preview geometry equals the working mesh.")
+        st.button(
             "Commit preview as current mesh",
             use_container_width=True,
-            disabled=not bool(preview_info.get("changed")) or not bool(preview_info.get("supported", True)),
-        ):
-            _commit_preview_mesh(working_mesh, active_mesh, controls, preview_info)
+            disabled=commit_disabled,
+            on_click=_commit_preview_mesh,
+            args=(working_mesh, active_mesh, controls, preview_info),
+        )
     else:
         st.caption("Live Preview is off. These buttons mutate the committed working mesh.")
-        if st.button("Add noise to current mesh", use_container_width=True):
-            _add_noise_to_working(controls)
-        if st.button("Apply smoothing", use_container_width=True):
-            _apply_smoothing_to_working(controls)
+        noise_blocked = not controls["noise_enabled"] or float(controls["noise_strength"]) <= 0.0
+        if noise_blocked:
+            st.caption(
+                "'Add noise' is disabled: enable the 'Noise enabled' checkbox and set "
+                "a strength above 0."
+            )
+        st.button(
+            "Add noise to current mesh",
+            use_container_width=True,
+            disabled=noise_blocked,
+            on_click=_add_noise_to_working,
+            args=(controls,),
+        )
+        lambda_is_noop = (
+            float(controls["smoothing_strength"]) <= 0.0
+            and controls["smoothing_method"] != TAUBIN
+        )
+        smoothing_blocked = int(controls["smoothing_iterations"]) <= 0 or lambda_is_noop
+        if smoothing_blocked:
+            st.caption(
+                "'Apply smoothing' is disabled: set iterations above 0 and lambda "
+                "above 0 (with these settings no vertex would move)."
+            )
+        st.button(
+            "Apply smoothing",
+            use_container_width=True,
+            disabled=smoothing_blocked,
+            on_click=_apply_smoothing_to_working,
+            args=(controls,),
+        )
 
-    if st.button("Reset experiment", use_container_width=True):
-        _reset_experiment()
-        st.session_state[NOISE_ENABLED_KEY] = False
-        st.session_state[SMOOTHING_ITERATIONS_KEY] = 0
-        st.session_state[DEMO_MODIFIER_KEY] = DEMO_NONE
-        st.session_state[PRESET_MESSAGE_KEY] = ""
-        st.session_state[PLAYGROUND_COMPARISON_KEY] = "Current only"
-        st.session_state[LIVE_PREVIEW_KEY] = True
-        st.success("Restored the clean original mesh.")
-        st.rerun()
+    st.button(
+        "Reset experiment",
+        use_container_width=True,
+        on_click=_reset_experiment_and_controls,
+    )
 
 
 def _meshes_have_same_vertices(first: MeshData, second: MeshData, tolerance: float = 1.0e-9) -> bool:
@@ -2470,8 +2685,82 @@ def _playground_status_text(
             )
 
     if parts:
-        return "Preview: " + "; ".join(parts) + "."
+        text = "Preview: " + "; ".join(parts) + "."
+        stage_line = _stage_roughness_line(preview_info)
+        if stage_line:
+            text += " " + stage_line
+        return text
     return "Preview: current controls do not move vertices yet."
+
+
+def _stage_roughness_line(preview_info: dict[str, object]) -> str:
+    """Describe the start -> noisy -> preview roughness sequence when known."""
+    stages = preview_info.get("stage_roughness", {})
+    if not isinstance(stages, dict):
+        return ""
+    start = stages.get("working")
+    noisy = stages.get("noisy")
+    preview = stages.get("preview")
+    if start is None or preview is None:
+        return ""
+    if noisy is not None:
+        return (
+            f"Roughness start -> noisy -> smoothed: {start:.4f} -> {noisy:.4f} -> "
+            f"{preview:.4f}."
+        )
+    if abs(preview - start) > 1.0e-12:
+        return f"Roughness start -> preview: {start:.4f} -> {preview:.4f}."
+    return ""
+
+
+def _viewer_heading_and_legend(
+    comparison_mode: str,
+    active_label: str,
+    active_mesh: MeshData,
+    original_mesh: MeshData,
+) -> tuple[str, str]:
+    """Return the mode-true viewer heading and the color legend for the mode."""
+    if comparison_mode == "Overlay":
+        return (
+            f"Viewer: original + {active_label.lower()} overlay",
+            "Legend: black wireframe = source original; blue shaded = "
+            f"{active_label.lower()}; orange lines = sampled vertex displacement.",
+        )
+    if comparison_mode == "Side-by-side":
+        return (
+            f"Viewer: original (left) vs {active_label.lower()} (right)",
+            "Legend: both meshes share ONE scene and camera, so a size difference "
+            "on screen is a real size difference. Left (grey) = source original; "
+            "right (blue) = " + active_label.lower() + ".",
+        )
+    if comparison_mode == "Original only":
+        return (
+            f"Viewer: source original ({original_mesh.name})",
+            "Legend: the viewer shows only the untouched source original. The "
+            "status and metric cards still describe the "
+            + active_label.lower()
+            + ", which is hidden in this view.",
+        )
+    return (
+        f"Viewer: {active_label.lower()} ({active_mesh.name})",
+        "Legend: the viewer shows the "
+        + active_label.lower()
+        + ". Display mode and normal overlays apply in this view.",
+    )
+
+
+def _render_expansion_warning(preview_info: dict[str, object]) -> None:
+    """Warn when the preview grew substantially versus the working mesh."""
+    bbox = preview_info.get("stage_bbox", {})
+    start = bbox.get("working")
+    end = bbox.get("preview")
+    if start and end and start > 0 and (end - start) / start > 0.15:
+        st.warning(
+            f"The preview EXPANDED the bounding-box diagonal by "
+            f"{100.0 * (end - start) / start:.1f}%. Smoothing should not grow a "
+            "mesh; if you are using Taubin, this lambda/mu pair is unstable "
+            "(try lambda 0.5, mu -0.53)."
+        )
 
 
 def _render_playground_viewer(
@@ -2482,14 +2771,23 @@ def _render_playground_viewer(
     preview_info: dict[str, object],
 ) -> None:
     """Render the primary visual preview area."""
-    mesh_label = "Preview mesh" if controls["live_preview"] else "Working mesh"
-    st.markdown(f"**{mesh_label}: {active_mesh.name}**")
-    st.info(_playground_status_text(original_mesh, active_mesh, controls, preview_info))
+    active_label = "Live preview" if controls["live_preview"] else "Working mesh"
     comparison_mode = st.selectbox(
         "Playground view",
         PLAYGROUND_COMPARISON_MODES,
         key=PLAYGROUND_COMPARISON_KEY,
     )
+    heading, legend = _viewer_heading_and_legend(
+        comparison_mode, active_label, active_mesh, original_mesh
+    )
+    st.markdown(f"**{heading}**")
+    status_prefix = (
+        f"{active_label} state (NOT shown in this view): "
+        if comparison_mode == "Original only"
+        else ""
+    )
+    st.info(status_prefix + _playground_status_text(original_mesh, active_mesh, controls, preview_info))
+    _render_expansion_warning(preview_info)
     if (
         comparison_mode in {"Overlay", "Side-by-side"}
         and _meshes_have_same_vertices(original_mesh, active_mesh)
@@ -2511,40 +2809,30 @@ def _render_playground_viewer(
                 active_mesh,
                 background_color=str(viewer_options["background_color"]),
                 show_axes=bool(viewer_options["show_axes"]),
-                window_size=(760, 560),
+                window_size=(760, 520),
                 highlight_vertices=highlight_vertices,
                 center_vertex=center_vertex,
             )
             _render_plotter(plotter)
         elif comparison_mode == "Side-by-side":
-            original_column, active_column = st.columns(2)
-            with original_column:
-                st.caption("Original clean mesh")
-                _render_mesh_plotter(
-                    original_mesh,
-                    display_mode=str(viewer_options["display_mode"]),
-                    background_color=str(viewer_options["background_color"]),
-                    show_axes=bool(viewer_options["show_axes"]),
-                    window_size=(360, 420),
-                )
-            with active_column:
-                st.caption(mesh_label)
-                _render_mesh_plotter(
-                    active_mesh,
-                    display_mode=str(viewer_options["display_mode"]),
-                    background_color=str(viewer_options["background_color"]),
-                    show_axes=bool(viewer_options["show_axes"]),
-                    window_size=(360, 420),
-                    highlight_vertices=highlight_vertices,
-                    center_vertex=center_vertex,
-                )
+            plotter = make_side_by_side_plotter(
+                original_mesh,
+                active_mesh,
+                display_mode=str(viewer_options["display_mode"]),
+                background_color=str(viewer_options["background_color"]),
+                show_axes=bool(viewer_options["show_axes"]),
+                window_size=(760, 460),
+                highlight_vertices=highlight_vertices,
+                center_vertex=center_vertex,
+            )
+            _render_plotter(plotter)
         elif comparison_mode == "Original only":
             _render_mesh_plotter(
                 original_mesh,
                 display_mode=str(viewer_options["display_mode"]),
                 background_color=str(viewer_options["background_color"]),
                 show_axes=bool(viewer_options["show_axes"]),
-                window_size=(760, 560),
+                window_size=(760, 520),
             )
         else:
             plotter = make_plotter(
@@ -2556,11 +2844,12 @@ def _render_playground_viewer(
                 show_vertex_normals=bool(viewer_options["show_vertex_normals"]),
                 normal_length=float(viewer_options["normal_length"]),
                 vertex_normal_weighting=str(viewer_options["vertex_normal_weighting"]),
-                window_size=(760, 560),
+                window_size=(760, 520),
                 highlight_vertices=highlight_vertices,
                 center_vertex=center_vertex,
             )
             _render_plotter(plotter)
+        st.caption(legend)
     except ImportError:
         st.error(
             "The 3D viewer requires PyVista and Panel. Install dependencies with "
@@ -2589,7 +2878,15 @@ def _render_dynamic_explanation(
         bullets.append("The preset adds a temporary raised grid bump so boundary and local smoothing have a visible feature to relax.")
 
     if controls["noise_enabled"]:
-        bullets.append("Noise creates controlled roughness; smoothing attempts to reduce that roughness while preserving the main shape.")
+        bullets.append(
+            "Noise draws a random (Gaussian) offset per vertex - sigma is the "
+            "strength times the median edge length, capped at half an edge - "
+            "along vertex normals or in random 3D. The same seed always "
+            "reproduces the same noise."
+        )
+        stage_line = _stage_roughness_line(preview_info)
+        if stage_line:
+            bullets.append(stage_line + " Smoothing succeeded if the last value is well below the noisy one without a large size change.")
 
     if controls["smoothing_mode"] == "Local / soft smoothing":
         summary = affected_soft_selection_vertices(
@@ -2609,26 +2906,26 @@ def _render_dynamic_explanation(
     elif controls["smoothing_method"] == UNIFORM_LAPLACIAN:
         bullets.extend(
             [
-                "Each vertex moves toward the average of its neighbors.",
-                "Roughness usually decreases as sharp changes relax.",
-                "Repeated averaging can shrink the mesh; compare the wireframe to the shaded result.",
+                "Each vertex moves toward the average of its neighbors (lambda sets the fraction; 0 moves nothing).",
+                "Watch the Overlay: on closed shapes the preview usually pulls inside the original wireframe (shrinkage).",
+                "Roughness falling together with a large size drop means collapse, not good smoothing.",
             ]
         )
     elif controls["smoothing_method"] == TAUBIN:
         bullets.extend(
             [
-                "Taubin alternates smoothing with a negative correction step.",
-                "The correction is intended to reduce shrinkage.",
-                "Compare the shrinkage card to Uniform Laplacian.",
+                "Taubin alternates a positive smoothing step (lambda) with a negative correction step (mu).",
+                "For suitable pairs (lambda < |mu|, e.g. 0.5 / -0.53) it smooths with much less shrinkage than Uniform.",
+                "Unsuitable pairs amplify mid frequencies - the app warns when the current pair is unstable.",
             ]
         )
     elif controls["smoothing_method"] == COTANGENT_LAPLACIAN:
         if is_triangle_mesh(mesh):
             bullets.extend(
                 [
-                    "Cotangent smoothing uses triangle angles to weight neighbors.",
-                    "The result depends on geometry, not only connectivity.",
-                    "It is defined here only for triangle meshes.",
+                    "Cotangent smoothing weights each neighbor by the triangle angles opposite the shared edge.",
+                    "This implementation requires a triangulation, computes the weights once from the starting shape, and clamps negative weights (a stability simplification).",
+                    "Compare it with Uniform on the same mesh: the weighted average respects triangle shape.",
                 ]
             )
         else:
@@ -2688,13 +2985,53 @@ def _boundary_motion_summary(
     }
 
 
-def _render_metric_cards(original_mesh: MeshData, active_mesh: MeshData) -> None:
-    """Render simple metric cards for the visual playground."""
-    st.subheader("Quick metrics")
+def _render_compact_metric_strip(
+    original_mesh: MeshData,
+    active_mesh: MeshData,
+    controls: dict[str, object],
+) -> None:
+    """Render the 3 key metrics + a look-for hint inside the sticky viewer column."""
     metrics = compare_meshes(original_mesh, active_mesh, smoothing_iterations=0)
-    rough_original = compute_roughness_energy(original_mesh)["mean"]
-    rough_active = compute_roughness_energy(active_mesh)["mean"]
-    rough_change = _percent_change(rough_original, rough_active)
+    rough_change = _percent_change(
+        compute_roughness_energy(original_mesh)["mean"],
+        compute_roughness_energy(active_mesh)["mean"],
+    )
+    columns = st.columns(3)
+    columns[0].metric(
+        "Roughness change",
+        _format_percent(rough_change) if rough_change is not None else "N/A",
+        help=ROUGHNESS_CAPTION + " Baseline: source original -> viewer state.",
+    )
+    columns[1].metric(
+        "AABB diagonal change",
+        _format_percent(metrics["bounding_box_percent_change"])
+        if metrics["bounding_box_percent_change"] is not None
+        else "N/A",
+        help="Axis-aligned bounding-box diagonal versus the source original. Negative = smaller.",
+    )
+    columns[2].metric(
+        "Avg vertex movement",
+        _format_value(metrics["average_displacement"])
+        if metrics["average_displacement"] is not None
+        else "N/A",
+        help="Mean distance each vertex moved from the source original (length units).",
+    )
+    if controls["smoothing_mode"] == "Local / soft smoothing":
+        hint = "Look for: only the orange highlighted region relaxes; everything else stays put."
+    elif controls["smoothing_method"] == TAUBIN:
+        hint = "Look for: roughness dropping while the AABB change stays small (Taubin's goal)."
+    elif controls["noise_enabled"]:
+        hint = "Look for: the surface getting spiky and roughness jumping up as noise is added."
+    else:
+        hint = "Look for: the preview pulling inside the original wireframe as iterations rise."
+    st.caption(hint + " With 1 iteration or a small lambda the change is real but subtle.")
+
+
+def _render_metric_cards(original_mesh: MeshData, active_mesh: MeshData) -> None:
+    """Render the secondary metric cards for the visual playground."""
+    st.subheader("More metrics")
+    st.caption("Baseline for every card: source original -> current viewer state.")
+    metrics = compare_meshes(original_mesh, active_mesh, smoothing_iterations=0)
     original = metrics["original"]
     current = metrics["current"]
     topology_changed = (
@@ -2703,42 +3040,18 @@ def _render_metric_cards(original_mesh: MeshData, active_mesh: MeshData) -> None
         or original["unique_edge_count"] != current["unique_edge_count"]
     )
 
-    if rough_change is None:
-        rough_value = "N/A"
-        rough_text = "Roughness needs comparable vertices with neighbor adjacency."
-    else:
-        rough_value = _format_percent(rough_change)
-        rough_text = "Negative means vertices are closer to their neighbor averages."
-
-    if metrics["bounding_box_percent_change"] is None:
-        shrink_value = "N/A"
-        shrink_text = "Bounding box change is unavailable for this mesh."
-    else:
-        shrink_value = f"{_format_percent(metrics['bounding_box_percent_change'])} bbox"
-        shrink_text = "Negative means the mesh got smaller."
-
     if metrics["surface_area_percent_change"] is None:
         area_value = "N/A"
         area_text = "Surface area needs usable faces."
     else:
         area_value = _format_percent(metrics["surface_area_percent_change"])
-        area_text = "Area often drops when smoothing removes detail."
-
-    if metrics["average_displacement"] is None:
-        movement_value = "N/A"
-        movement_text = "Movement needs the same vertex count as the original."
-    else:
-        movement_value = _format_value(metrics["average_displacement"])
-        movement_text = "Average distance each vertex moved from the original."
+        area_text = "Area can change for many reasons (smoothing, shrinkage, noise); it is not a direct 'detail removed' score."
 
     topology_value = "Yes" if topology_changed else "No"
-    topology_text = "Smoothing should move vertices without changing faces or edges."
+    topology_text = "Vertex/face/edge counts only. Smoothing here never changes them."
 
-    _metric_card("Roughness change", rough_value, rough_text)
-    _metric_card("Shrinkage", shrink_value, shrink_text)
     _metric_card("Surface area change", area_value, area_text)
-    _metric_card("Average movement", movement_value, movement_text)
-    _metric_card("Topology changed?", topology_value, topology_text)
+    _metric_card("Topology counts changed?", topology_value, topology_text)
     boundary_motion = _boundary_motion_summary(original_mesh, active_mesh)
     if boundary_motion is not None:
         boundary_value = "Yes" if boundary_motion["boundary_moved"] else "No"
@@ -2750,9 +3063,14 @@ def _render_metric_cards(original_mesh: MeshData, active_mesh: MeshData) -> None
 
 
 def _render_playground(working_mesh: MeshData, viewer_options: dict[str, object]) -> tuple[MeshData, dict[str, object]]:
-    """Render the visual-first playground tab."""
+    """Render the visual-first playground tab.
+
+    The center column is sticky and contains the viewer PLUS the compact metric
+    strip and look-for hint, so the change -> see -> understand loop stays on
+    screen even when the student scrolls down to the lower controls.
+    """
     original_mesh = st.session_state[ORIGINAL_MESH_KEY]
-    left_column, center_column, right_column = st.columns([0.29, 0.46, 0.25], gap="large")
+    left_column, center_column, right_column = st.columns([0.28, 0.47, 0.25], gap="large")
 
     with left_column:
         controls = _render_playground_controls(working_mesh)
@@ -2768,6 +3086,7 @@ def _render_playground(working_mesh: MeshData, viewer_options: dict[str, object]
             viewer_options,
             preview_info,
         )
+        _render_compact_metric_strip(original_mesh, active_mesh, controls)
 
     with right_column:
         _render_dynamic_explanation(working_mesh, controls, preview_info)
@@ -2776,11 +3095,12 @@ def _render_playground(working_mesh: MeshData, viewer_options: dict[str, object]
     return active_mesh, controls
 
 
-def _render_advanced_metrics_tab(mesh: MeshData, controls: dict[str, object] | None) -> None:
+def _render_advanced_metrics_tab(mesh: MeshData) -> None:
     """Render detailed committed-mesh metrics and summary."""
     st.subheader("Advanced Metrics")
     st.caption(
-        "Detailed tables use the committed working mesh. Playground cards show the live preview."
+        "All tables here compare the source original with the committed working "
+        "mesh. Playground cards show the live preview instead."
     )
     _render_smoothing_metrics(
         st.session_state[ORIGINAL_MESH_KEY],
@@ -2788,22 +3108,17 @@ def _render_advanced_metrics_tab(mesh: MeshData, controls: dict[str, object] | N
         st.session_state[SMOOTHING_STEPS_KEY],
     )
     _render_smoothing_history()
-    if controls is None:
-        controls = {
-            "smoothing_mode": st.session_state.get(SMOOTHING_MODE_KEY, "Global smoothing"),
-            "smoothing_method": st.session_state.get(SMOOTHING_METHOD_KEY, UNIFORM_LAPLACIAN),
-            "smoothing_iterations": st.session_state.get(SMOOTHING_ITERATIONS_KEY, 0),
-            "smoothing_strength": st.session_state.get(SMOOTHING_STRENGTH_KEY, 0.3),
-            "preserve_boundary": st.session_state.get(PRESERVE_BOUNDARY_KEY, True),
-        }
-    _render_learning_summary(
-        mesh,
-        str(controls["smoothing_mode"]),
-        str(controls["smoothing_method"]),
-        int(controls["smoothing_iterations"]),
-        float(controls["smoothing_strength"]),
-        bool(controls["preserve_boundary"]),
-    )
+    _render_learning_summary(mesh)
+
+
+def _render_flash_message() -> None:
+    """Show and clear the one-shot message set by action callbacks."""
+    flash = st.session_state.pop(FLASH_MESSAGE_KEY, None)
+    if not flash:
+        return
+    kind, text = flash
+    renderer = getattr(st, str(kind), st.info)
+    renderer(str(text))
 
 
 def main() -> None:
@@ -2818,7 +3133,8 @@ def main() -> None:
     st.title("Mesh Smoothing Lecture Lab")
     st.caption(
         "A visual playground for mesh smoothing: change controls, watch the mesh update, "
-        "then inspect the math and metrics when needed."
+        "then inspect the math and metrics when needed. New here? Start with the "
+        "'See shrinkage' preset in the Playground."
     )
 
     with st.sidebar:
@@ -2832,35 +3148,30 @@ def main() -> None:
     with st.sidebar:
         viewer_options = _render_viewer_sidebar(working_mesh)
 
-    active_mesh: MeshData = working_mesh
-    controls: dict[str, object] | None = None
+    # Section navigation renders only the selected section (unlike st.tabs,
+    # which executed every tab body - including hidden 3D viewers - on every
+    # rerun and spammed the console with zero-size WebGL warnings).
+    section = st.radio(
+        "Section",
+        LEARNING_SECTIONS,
+        key=ACTIVE_SECTION_KEY,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    _render_flash_message()
 
-    (
-        playground_tab,
-        method_tab,
-        inspector_tab,
-        guided_tab,
-        exercises_tab,
-        metrics_tab,
-    ) = st.tabs(LEARNING_TABS)
-
-    with playground_tab:
-        active_mesh, controls = _render_playground(working_mesh, viewer_options)
-
-    with method_tab:
+    if section == "Playground":
+        _render_playground(working_mesh, viewer_options)
+    elif section == "Method Comparison":
         _render_method_comparison_lab(_working_mesh())
-
-    with inspector_tab:
+    elif section == "Step Inspector":
         _render_step_inspector(_working_mesh())
-
-    with guided_tab:
+    elif section == "Guided Learning":
         _render_guided_learning_tab()
-
-    with exercises_tab:
+    elif section == "Student Exercises":
         _render_student_exercises()
-
-    with metrics_tab:
-        _render_advanced_metrics_tab(_working_mesh(), controls)
+    else:
+        _render_advanced_metrics_tab(_working_mesh())
 
 
 if __name__ == "__main__":

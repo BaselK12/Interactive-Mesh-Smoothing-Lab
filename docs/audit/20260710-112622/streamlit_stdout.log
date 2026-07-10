@@ -1,0 +1,68 @@
+
+  You can now view your Streamlit app in your browser.
+
+  URL: http://127.0.0.1:8501
+
++------------------------- Traceback (most recent call last) --------------------------+
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\scriptrunner\exec_code.py:129 in exec_func_with_error_handling           |
+|                                                                                      |
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\scriptrunner\script_runner.py:789 in code_to_exec                        |
+|                                                                                      |
+| C:\Personal\University\Computer Graphics\Interactive Mesh Processing                 |
+| Visualizer\app.py:2867 in <module>                                                   |
+|                                                                                      |
+|   2864                                                                               |
+|   2865                                                                               |
+|   2866 if __name__ == "__main__":                                                    |
+| > 2867     main()                                                                    |
+|   2868                                                                               |
+|                                                                                      |
+| C:\Personal\University\Computer Graphics\Interactive Mesh Processing                 |
+| Visualizer\app.py:2848 in main                                                       |
+|                                                                                      |
+|   2845     ) = st.tabs(LEARNING_TABS)                                                |
+|   2846                                                                               |
+|   2847     with playground_tab:                                                      |
+| > 2848         active_mesh, controls = _render_playground(working_mesh, viewer_optio |
+|   2849                                                                               |
+|   2850     with method_tab:                                                          |
+|   2851         _render_method_comparison_lab(_working_mesh())                        |
+|                                                                                      |
+| C:\Personal\University\Computer Graphics\Interactive Mesh Processing                 |
+| Visualizer\app.py:2760 in _render_playground                                         |
+|                                                                                      |
+|   2757     with left_column:                                                         |
+|   2758         controls = _render_playground_controls(working_mesh)                  |
+|   2759         active_mesh, preview_info = _build_preview_mesh(working_mesh, control |
+| > 2760         _render_commit_controls(working_mesh, active_mesh, controls, preview_ |
+|   2761                                                                               |
+|   2762     with center_column:                                                       |
+|   2763         st.markdown('<div class="sticky-preview-marker"></div>', unsafe_allow |
+|                                                                                      |
+| C:\Personal\University\Computer Graphics\Interactive Mesh Processing                 |
+| Visualizer\app.py:2390 in _render_commit_controls                                    |
+|                                                                                      |
+|   2387                                                                               |
+|   2388     if st.button("Reset experiment", use_container_width=True):               |
+|   2389         _reset_experiment()                                                   |
+| > 2390         st.session_state[NOISE_ENABLED_KEY] = False                           |
+|   2391         st.session_state[SMOOTHING_ITERATIONS_KEY] = 0                        |
+|   2392         st.session_state[DEMO_MODIFIER_KEY] = DEMO_NONE                       |
+|   2393         st.session_state[PRESET_MESSAGE_KEY] = ""                             |
+|                                                                                      |
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\metrics_util.py:698 in wrapped_func                                      |
+|                                                                                      |
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\state\session_state_proxy.py:114 in __setitem__                          |
+|                                                                                      |
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\state\safe_session_state.py:109 in __setitem__                           |
+|                                                                                      |
+| C:\Users\b.karkabee\AppData\Local\Programs\Python\Python313\Lib\site-packages\stream |
+| lit\runtime\state\session_state.py:608 in __setitem__                                |
++--------------------------------------------------------------------------------------+
+StreamlitAPIException: `st.session_state.noise_enabled` cannot be modified after the 
+widget with key `noise_enabled` is instantiated.
