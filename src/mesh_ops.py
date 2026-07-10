@@ -348,12 +348,12 @@ def taubin_smooth(
     """Taubin lambda/mu smoothing to reduce shrinkage from plain averaging.
 
     Each iteration applies a positive uniform-Laplacian step with factor ``lam``
-    followed by a negative correction step with factor ``mu`` (mu < 0). For
-    suitable pairs (``lam < |mu|`` with a small positive pass-band
-    ``1/lam + 1/mu``) the negative step counteracts the inward pull of ordinary
-    Laplacian smoothing so the mesh keeps its size while still relaxing
-    roughness. Unsuitable pairs amplify mid frequencies and can expand or
-    destroy the mesh; use :func:`taubin_stability` to check a pair.
+    followed by a negative correction step with factor ``mu`` (mu < 0). The
+    condition ``lam < |mu|`` gives a positive pass-band ``1/lam + 1/mu``, but
+    does not by itself prevent amplification across the full spectral range.
+    Unsuitable pairs can expand or destroy the mesh; use
+    :func:`taubin_stability` for this app's sampled-gain warning. A zero
+    ``lam`` still leaves the negative ``mu`` pass active.
     """
     if not mesh.valid:
         return clone_mesh(mesh)
@@ -377,11 +377,11 @@ def taubin_stability(lam: float, mu: float, samples: int = 512) -> dict[str, flo
 
     For the uniform umbrella operator the per-iteration transfer function is
     ``f(w) = (1 - lam*w) * (1 - mu*w)`` with eigenvalues ``w`` in ``(0, 2]``.
-    ``max_gain`` is the largest ``|f(w)|`` over that range. Classic stable pairs
-    (for example lam=0.5, mu=-0.53) have a max gain barely above 1, so the pair
-    is reported stable when ``max_gain <= 1.01``. ``pass_band`` is
+    ``max_gain`` is the largest sampled ``|f(w)|`` over that range. The UI
+    labels a pair stable when ``max_gain <= 1.01``; this is a classroom warning
+    heuristic, not a proof of stability for every mesh. ``pass_band`` is
     ``1/lam + 1/mu`` (the Taubin pass-band frequency), or ``None`` when a factor
-    is zero.
+    is zero. A positive pass-band alone is not enough to pass the gain check.
     """
     lam = float(lam)
     mu = float(mu)

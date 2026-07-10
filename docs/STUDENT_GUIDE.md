@@ -44,16 +44,19 @@ experiment** returns to the clean original at any time.
 - **Expected:** The smoothed roughness is well below the noisy stage and close
   to the clean value while the size changes only a few percent. Then set lambda
   to 0.2: the app warns that the Taubin pair became unstable.
-- **Why:** Denoising trades roughness reduction against shape preservation, and
-  Taubin only limits shrinkage for suitable lambda/mu pairs (lambda < |mu|).
+- **Why:** Denoising trades roughness reduction against shape preservation.
+  Lambda < |mu| gives a positive Taubin pass-band, but use the app's
+  sampled-gain warning rather than treating that condition alone as stable.
 
 ## Exercise 5 - Method comparison
 - **Goal:** Compare methods on the *same* noisy input.
 - **Steps:** Click **Uniform vs Taubin**, open **Method Comparison**, confirm
   the comparison input says **Noisy preview stage (before smoothing)**, and
   click **Run comparison from the selected input**.
-- **Expected:** All methods start from the same seed-42 noisy sphere. Uniform
-  shrinks more; Taubin keeps size better at the shown settings.
+- **Expected:** All methods start from the same seed-42 noisy sphere. At the
+  shown settings, Uniform has the more negative AABB change while Taubin is
+  closer to the comparison input size; this is an observation for this run,
+  not a general ranking.
 - **Why:** A fair comparison needs one shared input. Even then, equal iteration
   counts are not equal work (Taubin does two passes per iteration), and the
   observations describe this input only, not methods in general.
@@ -62,12 +65,13 @@ experiment** returns to the clean original at any time.
 - **Goal:** See how a soft-selection radius controls the affected region.
 - **Steps:** Click **Local soft smoothing**. Try radius 1, then radius 3; at
   radius 3 switch the falloff between linear and smoothstep.
-- **Expected:** The orange highlighted region and the ring-weight table grow
+- **Expected:** The orange nonzero-weight region and the ring-weight table grow
   with radius; the falloff choice changes the middle-ring weights only at
   radius 3+ (at radius 1-2 both curves are identical, so the control is locked
   there).
 - **Why:** Soft selection localizes edits through graph distance (1 step =
-  crossing one edge). Vertices exactly at the radius always have weight 0.
+  crossing one edge). Vertices exactly at the radius have weight 0, so they
+  are neither moved nor included in the orange highlight.
 
 ## Exercise 7 - Step inspector
 - **Goal:** Connect the smoothing formula — including the boundary rule — to a
@@ -77,5 +81,6 @@ experiment** returns to the clean original at any time.
 - **Expected:** Vertex 0 is reported as a pinned boundary vertex with zero
   predicted movement; the interior vertex moves toward its neighbor average as
   the formula predicts.
-- **Why:** The inspector shows the real update rule the smoother applies,
-  including boundary pinning and the synchronous (all-at-once) update.
+- **Why:** The inspector shows the real update rule for Uniform or Cotangent
+  when its boundary checkbox matches the operation, including boundary pinning
+  and the synchronous (all-at-once) update.

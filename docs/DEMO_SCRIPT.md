@@ -22,7 +22,8 @@ the exact control as it appears in the app.
   *start -> noisy -> smoothed*. The smoothed value is well below the noisy one
   while the AABB change stays small.
 - Optional: drag **Smoothing strength (lambda)** to 0.2 and show the instability
-  warning — Taubin only limits shrinkage for suitable lambda/mu pairs.
+  warning. Explain that `lambda < |mu|` gives a positive pass-band but is not
+  sufficient by itself; the app's sampled-gain check flags this pair.
 
 ## 3. Fair method comparison (~40s)
 - Click **Reset experiment**, then **Uniform vs Taubin**.
@@ -42,9 +43,9 @@ the exact control as it appears in the app.
 
 ## 5. The formula on one vertex (~20s)
 - Open **Step Inspector** on Plane/grid; vertex 0 is a corner.
-- Show the pinned-boundary banner: the inspector honors the same boundary rule
-  as the smoother. Switch to an interior vertex (e.g. 12) to show the neighbor
-  average, displacement, lambda, and predicted position.
+- Ensure **Preserve boundary vertices for this inspection** is on, then show the
+  pinned-boundary banner. Switch to an interior vertex (e.g. 12) to show the
+  neighbor average, displacement, lambda, and predicted position.
 
 ## Closing line
 "The lab turns one lecture topic — mesh smoothing — into measurable, comparable,

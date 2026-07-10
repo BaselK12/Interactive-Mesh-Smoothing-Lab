@@ -14,6 +14,9 @@ import numpy as np
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from src.mesh_metrics import compare_meshes
+from src.mesh_ops import compute_roughness_energy
+
 APP = "app.py"
 TIMEOUT = 60
 
@@ -129,8 +132,8 @@ def test_comparison_defaults_to_noisy_stage_after_preset():
     assert rows and all(row["Roughness before"] == pytest.approx(0.15686846967151227) for row in rows)
 
 
-def test_comparison_flags_stale_results_after_commit():
-    """AUD-010 regression: stored comparison must be flagged when input changes."""
+def test_comparison_results_are_cleared_after_commit():
+    """AUD-010 regression: a working-state mutation invalidates results."""
     at = _make()
     at.session_state["active_learning_section"] = "Method Comparison"
     at.run()
@@ -145,8 +148,9 @@ def test_comparison_flags_stale_results_after_commit():
     _click(at, "Apply smoothing")
     at.session_state["active_learning_section"] = "Method Comparison"
     at.run()
-    warnings = " ".join(str(w.value) for w in at.warning)
-    assert "earlier snapshot" in warnings
+    assert "method_comparison_rows" not in at.session_state
+    info = " ".join(str(item.value) for item in at.info)
+    assert "Run comparison from the selected input" in info
 
 
 def test_summary_reports_committed_method_not_current_widget():
@@ -196,6 +200,93 @@ def test_preset_source_switch_keeps_preset_controls():
     assert at.session_state["noise_enabled"] is True
     assert at.session_state["smoothing_iterations"] == 10
     assert at.session_state["smoothing_strength"] == 0.5
+
+
+def test_local_preset_keeps_its_declared_selection_across_source_switch():
+    """The radius-3 local preset must not be overwritten by source initialization."""
+    at = _make()
+    _click(at, "Local soft smoothing")
+    assert at.session_state["sample_mesh"] == "Plane/grid"
+    assert at.session_state["local_center_vertex"] == 12
+    assert at.session_state["local_soft_radius"] == 3
+
+
+def test_same_source_preset_does_not_leak_source_switch_marker():
+    """A later manual switch must neutralize controls even after a same-source preset."""
+    at = _make()
+    at.session_state["sample_mesh"] = "Low-poly sphere"
+    at.run()
+    _click(at, "Remove noise")  # Low-poly sphere is already the selected source.
+    assert at.session_state["noise_enabled"] is True
+    assert at.session_state["smoothing_iterations"] == 10
+
+    at.session_state["sample_mesh"] = "Cube"
+    at.run()
+    assert at.session_state["noise_enabled"] is False
+    assert at.session_state["smoothing_iterations"] == 0
+
+
+def _committed_summary(at: AppTest) -> str:
+    """Build the exact downloadable summary from the test session's committed state."""
+    import app
+
+    original = at.session_state["original_mesh"]
+    working = at.session_state["working_mesh"]
+    metrics = compare_meshes(
+        original,
+        working,
+        smoothing_iterations=at.session_state["smoothing_steps"],
+    )
+    return app._build_summary_markdown(
+        working,
+        at.session_state["smoothing_steps"],
+        metrics,
+        compute_roughness_energy(original)["mean"],
+        compute_roughness_energy(working)["mean"],
+        metrics["current"],
+        at.session_state["smoothing_history"],
+    )
+
+
+def test_combined_preview_commit_records_noise_settings_in_history_and_summary():
+    """A preview that adds noise then smooths must retain all noise provenance."""
+    at = _make()
+    _click(at, "Remove noise")
+    _click(at, "Commit preview as current mesh")
+
+    history = at.session_state["smoothing_history"]
+    assert len(history) == 1
+    row = history[-1]
+    assert row["Noise strength"] == pytest.approx(0.35)
+    assert row["Noise seed"] == 42
+    assert row["Noise mode"] == "Along vertex normals"
+
+    summary = _committed_summary(at)
+    assert "- Noise strength: 0.35" in summary
+    assert "- Noise seed: 42" in summary
+    assert "- Noise mode: Along vertex normals" in summary
+
+
+def test_manual_noise_records_settings_in_history_and_summary():
+    """Manual noise uses the same provenance path as a committed preview."""
+    at = _make()
+    at.session_state["live_preview_enabled"] = False
+    at.session_state["noise_enabled"] = True
+    at.session_state["noise_strength"] = 0.4
+    at.session_state["noise_seed"] = 73
+    at.session_state["noise_mode"] = "Random 3D displacement"
+    at.run()
+    _click(at, "Add noise to current mesh")
+
+    row = at.session_state["smoothing_history"][-1]
+    assert row["Noise strength"] == pytest.approx(0.4)
+    assert row["Noise seed"] == 73
+    assert row["Noise mode"] == "Random 3D displacement"
+
+    summary = _committed_summary(at)
+    assert "- Noise strength: 0.40" in summary
+    assert "- Noise seed: 73" in summary
+    assert "- Noise mode: Random 3D displacement" in summary
 
 
 def test_taubin_unstable_pair_shows_warning():
